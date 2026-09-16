@@ -11,7 +11,7 @@ export default function StatsOverview({ violations = [] }) {
     { label: "Eventos Totais", value: total, icon: BarChart3, color: "text-blue-600", bg: "bg-blue-50" },
     { label: "Não Conformidades", value: actives, icon: AlertOctagon, color: "text-red-600", bg: "bg-red-50" },
     { label: "Taxa de Segurança", value: `${complianceRate}%`, icon: ShieldCheck, color: "text-green-600", bg: "bg-green-50" },
-    { label: "Zonas Ativas", value: "03", icon: Users, color: "text-purple-600", bg: "bg-purple-50" },
+    { label: "Quantidade de Câmeras", value: "02", icon: Cctv, color: "text-purple-600", bg: "bg-purple-50" },
   ];
 
   return (
