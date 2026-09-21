@@ -1,39 +1,59 @@
-**Welcome to your Base44 project** 
+<h1 align="center">
+  🏗️ Sistema Inteligente de Detecção de EPIs em Obras Civis
+</h1>
 
-**About**
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/YOLOv8-FF0000?style=for-the-badge&logo=ultralytics&logoColor=white" alt="YOLOv8" />
+  <img src="https://img.shields.io/badge/OpenCV-5C3EE8?style=for-the-badge&logo=opencv&logoColor=white" alt="OpenCV" />
+  <img src="https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB" alt="React" />
+  <img src="https://img.shields.io/badge/Node.js-43853D?style=for-the-badge&logo=node.js&logoColor=white" alt="Node.js" />
+  <img src="https://img.shields.io/badge/SQLite-07405E?style=for-the-badge&logo=sqlite&logoColor=white" alt="SQLite" />
+</p>
 
-View and Edit  your app on [Base44.com](http://Base44.com) 
+> **Trabalho de Conclusão de Curso (TCC)** em Ciência da Computação pela Universidade Paulista (UNIP).
 
-This project contains everything you need to run your app locally.
+Este repositório contém o código-fonte de um sistema integrado de câmera inteligente baseado em Visão Computacional. O projeto foi desenhado para monitorar canteiros de obras e identificar, em tempo real, funcionários que não estejam utilizando os Equipamentos de Proteção Individual (EPIs) obrigatórios, garantindo maior segurança no ambiente de trabalho.
 
-**Edit the code in your local development environment**
+---
 
-Any change pushed to the repo will also be reflected in the Base44 Builder.
+## 🧩 Arquitetura do Sistema
 
-**Prerequisites:** 
+A solução opera em duas frentes principais de forma assíncrona: a inferência de inteligência artificial capturando e analisando o vídeo, e o painel web para monitoramento gerencial.
 
-1. Clone the repository using the project's Git URL 
-2. Navigate to the project directory
-3. Install dependencies: `npm install`
-4. Create an `.env.local` file and set the right environment variables
+| Camada | Tecnologias Utilizadas |
+| :--- | :--- |
+| **Visão Computacional (IA)** | Python, YOLOv8 (Ultralytics), OpenCV |
+| **Interface Web (Dashboard)** | React, Vite, Tailwind CSS, Shadcn UI |
+| **Backend e Dados** | Node.js (`server.js`), SQLite (`database.sqlite`) |
+| **Testes e Automação** | Python (`popular_dashboard.py`), Node (`simulador.js`) |
 
-```
-VITE_BASE44_APP_ID=your_app_id
-VITE_BASE44_APP_BASE_URL=your_backend_url
+---
 
-e.g.
-VITE_BASE44_APP_ID=cbef744a8545c389ef439ea6
-VITE_BASE44_APP_BASE_URL=https://my-to-do-list-81bfaad7.base44.app
-```
+## 📂 Estrutura do Repositório
 
-Run the app: `npm run dev`
+O repositório é um *monorepo* que consolida o modelo de rede neural e a aplicação web. 
 
-**Publish your changes**
-
-Open [Base44.com](http://Base44.com) and click on Publish.
-
-**Docs & Support**
-
-Documentation: [https://docs.base44.com/Integrations/Using-GitHub](https://docs.base44.com/Integrations/Using-GitHub)
-
-Support: [https://app.base44.com/support](https://app.base44.com/support)
+```text
+📁 raiz-do-projeto/
+├── 🤖 IA e Visão Computacional
+│   ├── yolov8n.pt                # Pesos do modelo de rede neural (YOLOv8)
+│   ├── teste_final_epi.py        # Script principal de captura de vídeo e detecção
+│   ├── teste_webcam.py           # Script secundário para testes rápidos de hardware
+│   └── popular_dashboard.py      # Script em Python para gerar dados de teste
+│
+├── ⚙️ Backend
+│   ├── server.js                 # Servidor Node.js (API de comunicação IA <-> Web)
+│   ├── database.sqlite           # Banco de dados local com registros de infrações
+│   └── simulador.js              # Script Node para simular inserção contínua de dados
+│
+└── 💻 Frontend (Dashboard)
+    └── src/
+        ├── pages/
+        │   ├── Dashboard.jsx     # Visão geral de ocorrências
+        │   ├── Violations.jsx    # Histórico detalhado das infrações
+        │   ├── Workers.jsx       # Gestão de funcionários cadastrados
+        │   └── Zones.jsx         # Mapeamento de áreas de risco da obra
+        └── components/
+            ├── ui/               # Biblioteca de componentes base (Shadcn UI)
+            └── dashboard/        # Widgets (AlertFeed.jsx, ViolationChart.jsx)
