@@ -12,8 +12,7 @@ export default function SistemaPainel() {
         const hora = new Date().toLocaleTimeString();
         setLogs((prevLogs) => {
             const novosLogs = [...prevLogs, `[${hora}] ${mensagem}`];
-            // Mantém apenas os últimos 50 logs para não pesar a memória
-            return novosLogs.slice(-50); 
+            return novosLogs.slice(-50); // Mantém apenas os últimos 50 logs
         });
     };
 
@@ -22,13 +21,11 @@ export default function SistemaPainel() {
 
         const testarConexao = async () => {
             try {
-                // Requisição REAL para a sua API Node.js
                 const response = await fetch('http://localhost:3000/api/status/edge');
                 const data = await response.json();
                 
                 setIsOnline(data.online);
 
-                // Adiciona log apenas quando o status muda
                 if (statusAnterior !== null && statusAnterior !== data.online) {
                     if (data.online) {
                         adicionarLog(`Conexão reestabelecida com a Edge (${IP_PLACA}). Latência: ${data.time}ms`);
@@ -47,10 +44,7 @@ export default function SistemaPainel() {
             }
         };
 
-        // Roda o primeiro teste imediatamente
         testarConexao();
-        
-        // Mantém o monitoramento real a cada 10 segundos
         const intervalo = setInterval(testarConexao, 10000);
 
         return () => clearInterval(intervalo);
@@ -77,7 +71,7 @@ export default function SistemaPainel() {
                     </span>
                 </div>
                 <p style={{ color: "#94a3b8", fontSize: "14px" }}>
-                    O backend Node.js realiza disparos ICMP (Ping) a cada 10 segundos para atestar a comunicação real com o hardware na borda.
+                    O backend Node.js realiza verificações periódicas para atestar a comunicação real com o hardware na borda.
                 </p>
             </div>
 

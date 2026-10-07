@@ -45,3 +45,15 @@ export async function getMetrics() {
     return [];
     }
 }
+
+export async function getWorkers() {
+    try {
+        const response = await fetch(`${API_URL}/workers`, { cache: 'no-store' });
+        if (!response.ok) throw new Error('Erro ao buscar trabalhadores');
+        const json = await response.json();
+        return json.data;
+    } catch (error) {
+        console.error("Erro ao buscar trabalhadores:", error);
+        return [];
+    }
+}

@@ -1,26 +1,37 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+
+// Importação da conexão com o banco (opcional manter aqui se não for usar direto no server)
 const pool = require('./src/config/db');
 
-// Importando as rotas
+// Importando todas as rotas
+const systemRoutes = require('./src/routes/systemRoutes');
 const violationRoutes = require('./src/routes/violationRoutes');
-const metricsRoutes = require('./src/routes/metricsRoutes'); // <-- Adicione esta linha
+const metricsRoutes = require('./src/routes/metricsRoutes');
+const areaRoutes = require('./src/routes/areaRoutes');
+const workersRoutes = require('./src/routes/workersRoutes'); // <-- Adicionado
+
 const app = express();
 const PORT = process.env.PORT || 3000;
-const areaRoutes = require('./src/routes/areaRoutes'); // <-- Adicione esta linha
 
+// Middlewares
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Rota de Health Check (Teste simples)
 app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'OK', message: 'API rodando!' });
 });
-app.use('/api/metrics', metricsRoutes); // <-- E adicione esta linha
-// Adicionando a rota de violações ao servidor
+
+// Registrando as Rotas da API
+app.use('/api/status', systemRoutes);
 app.use('/api/violations', violationRoutes);
-app.use('/api/areas', areaRoutes); // <-- E adicione esta linha
+app.use('/api/metrics', metricsRoutes);
+app.use('/api/areas', areaRoutes);
+app.use('/api/workers', workersRoutes); // <-- Adicionado
+
 app.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
+  console.log(`🚀 Servidor rodando na porta ${PORT}`);
 });

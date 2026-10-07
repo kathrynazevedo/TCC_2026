@@ -1,21 +1,47 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import Sidebar from "./Sidebar";
 import TopBar from "./TopBar";
 import { Outlet } from "react-router-dom";
 
 export default function AppLayout() {
+  // Estado para a Sidebar recolhível
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  
+  // Estado para o Dark Mode (Puxa do cache do navegador se existir)
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    return localStorage.getItem("theme") === "dark";
+  });
+
+  // Efeito que injeta a classe 'dark' no HTML quando o botão é ativado
+  useEffect(() => {
+    if (isDarkMode) {
+      document.documentElement.classList.add("dark");
+      localStorage.setItem("theme", "dark");
+    } else {
+      document.documentElement.classList.remove("dark");
+      localStorage.setItem("theme", "light");
+    }
+  }, [isDarkMode]);
+
   return (
-    <div className="flex h-screen bg-slate-50 overflow-hidden">
-      {/* Sidebar Desktop: fixa à esquerda, some em telas menores que 1024px (lg) */}
-      <aside className="hidden lg:flex lg:w-72 lg:flex-col lg:fixed lg:inset-y-0 border-r border-slate-200 bg-slate-900">
-        <Sidebar />
+    <div className="flex h-screen bg-slate-50 dark:bg-[#09090b] overflow-hidden transition-colors duration-300">
+      
+      {/* Sidebar Desktop com tamanho dinâmico (w-20 ou w-72) */}
+      <aside 
+        className={`hidden lg:flex lg:flex-col lg:fixed lg:inset-y-0 border-r border-slate-200 dark:border-slate-800 bg-[#0f172a] transition-all duration-300 z-50 ${isCollapsed ? 'w-20' : 'w-72'}`}
+      >
+        <Sidebar isCollapsed={isCollapsed} setIsCollapsed={setIsCollapsed} />
       </aside>
 
-      {/* Área Principal: No mobile ocupa tudo, no desktop dá espaço para a sidebar fixa */}
-      <div className="flex flex-col flex-1 lg:pl-72 w-full overflow-hidden">
-        <TopBar />
+      {/* Área Principal (Ajusta o padding lateral dependendo da Sidebar) */}
+      <div className={`flex flex-col flex-1 w-full overflow-hidden transition-all duration-300 ${isCollapsed ? 'lg:pl-20' : 'lg:pl-72'}`}>
         
-        <main className="flex-1 relative overflow-y-auto focus:outline-none">
+        <TopBar 
+          isDarkMode={isDarkMode} 
+          setIsDarkMode={setIsDarkMode} 
+        />
+        
+        <main className="flex-1 relative overflow-y-auto focus:outline-none dark:text-slate-200">
           <div className="py-6 px-4 sm:px-6 lg:px-8 max-w-[1600px] mx-auto">
             <Outlet />
           </div>

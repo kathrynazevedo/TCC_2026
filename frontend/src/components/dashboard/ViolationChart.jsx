@@ -11,7 +11,10 @@ export default function ViolationChart({ violations = [] }) {
         hoursCount[h] = { time: h, "Risco Cabeça": 0, "Risco Corpo": 0 };
     }
 
-    violations.forEach(v => {
+const today = moment().startOf('day');
+    const violationsToday = violations.filter(v => moment(v.detected_at).isSameOrAfter(today));
+
+    violationsToday.forEach(v => {
       const hour = moment(v.detected_at).format("HH:00");
       if (hoursCount[hour]) {
         if (v.type === 'no-helmet') hoursCount[hour]["Risco Cabeça"] += 1;
