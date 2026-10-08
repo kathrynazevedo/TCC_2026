@@ -1,0 +1,18 @@
+{
+  "name": "tcc-epi-monolito",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Sistema inteligente de detecção de EPIs em obras civis (TCC): backend, frontend e borda no mesmo repositório.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "install:all": "npm --prefix backend_api install && npm --prefix frontend install",
+    "dev:api": "npm --prefix backend_api run dev",
+    "dev:web": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "start": "npm --prefix backend_api start",
+    "test": "npm --prefix backend_api test",
+    "lint": "npm --prefix frontend run lint"
+  }
+}

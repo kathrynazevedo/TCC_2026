@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from "react";
+import React, { Suspense, useState, useEffect } from "react";
 import Sidebar from "./Sidebar";
 import TopBar from "./TopBar";
 import { Outlet } from "react-router-dom";
+import ErrorBoundary from "@/components/common/ErrorBoundary";
 
 export default function AppLayout() {
   // Estado para a Sidebar recolhível
@@ -9,17 +10,20 @@ export default function AppLayout() {
   
   // Estado para o Dark Mode (Puxa do cache do navegador se existir)
   const [isDarkMode, setIsDarkMode] = useState(() => {
-    return localStorage.getItem("theme") === "dark";
+    try {
+      return localStorage.getItem("theme") === "dark";
+    } catch {
+      return false;
+    }
   });
 
   // Efeito que injeta a classe 'dark' no HTML quando o botão é ativado
   useEffect(() => {
-    if (isDarkMode) {
-      document.documentElement.classList.add("dark");
-      localStorage.setItem("theme", "dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-      localStorage.setItem("theme", "light");
+    document.documentElement.classList.toggle("dark", isDarkMode);
+    try {
+      localStorage.setItem("theme", isDarkMode ? "dark" : "light");
+    } catch {
+      // armazenamento indisponível (modo privado): o tema só não será lembrado
     }
   }, [isDarkMode]);
 
@@ -43,7 +47,17 @@ export default function AppLayout() {
         
         <main className="flex-1 relative overflow-y-auto focus:outline-none dark:text-slate-200">
           <div className="py-6 px-4 sm:px-6 lg:px-8 max-w-[1600px] mx-auto">
-            <Outlet />
+            <ErrorBoundary>
+              <Suspense
+                fallback={
+                  <div className="flex justify-center py-24">
+                    <div className="w-8 h-8 border-4 border-slate-200 border-t-blue-600 rounded-full animate-spin" />
+                  </div>
+                }
+              >
+                <Outlet />
+              </Suspense>
+            </ErrorBoundary>
           </div>
         </main>
       </div>

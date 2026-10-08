@@ -1,68 +1,55 @@
-const pool = require('../config/db');
+const db = require('../config/db');
+const env = require('../config/env');
+const HttpError = require('../utils/httpError');
+const { parseId } = require('../utils/validators');
 
-// Função 1: Chamada pelo Frontend (React) para atualizar o painel
-const getEdgeStatus = async (req, res) => {
-    try {
-        // Consulta o dispositivo de borda mais recente/ativo no banco
-        const query = `
-            SELECT id_dispositivo, numero_serie, ultima_atividade 
-            FROM dispositivo_borda 
-            ORDER BY ultima_atividade DESC 
-            LIMIT 1;
-        `;
-        const result = await pool.query(query);
+// GET /api/status/edge — painel "Sistema" do dashboard.
+exports.getEdgeStatus = async (req, res) => {
+  // A diferença é calculada no próprio banco: evita erro de fuso entre Node e Postgres.
+  const result = await db.query(
+    `SELECT id_dispositivo,
+            numero_serie,
+            ultima_atividade,
+            (EXTRACT(EPOCH FROM NOW()) - EXTRACT(EPOCH FROM ultima_atividade))::float AS segundos_inativo
+       FROM dispositivo_borda
+      WHERE ultima_atividade IS NOT NULL
+      ORDER BY ultima_atividade DESC
+      LIMIT 1`
+  );
 
-        if (result.rows.length === 0) {
-            return res.status(200).json({ online: false, time: 0 });
-        }
+  if (result.rows.length === 0) {
+    return res.status(200).json({
+      online: false,
+      segundos_inativo: null,
+      limite_offline_segundos: env.edgeOfflineAfterSeconds,
+      detalhes: null,
+    });
+  }
 
-        const dispositivo = result.rows[0];
-        const agora = new Date();
-        const ultimaAtividade = new Date(dispositivo.ultima_atividade);
-        
-        // Considera online se a última atividade ocorreu nos últimos 60 segundos
-        const diffSegundos = (agora - ultimaAtividade) / 1000;
-        const isOnline = diffSegundos <= 60;
-
-        res.status(200).json({ 
-            online: isOnline, 
-            time: Math.round(diffSegundos * 1000), // Latência simulada
-            detalhes: dispositivo
-        });
-    } catch (error) {
-        console.error('Erro ao verificar status da edge:', error);
-        res.status(500).json({ online: false, error: 'Erro interno ao verificar status' });
-    }
+  const { segundos_inativo, ...detalhes } = result.rows[0];
+  res.status(200).json({
+    online: segundos_inativo <= env.edgeOfflineAfterSeconds,
+    segundos_inativo: Math.max(0, Math.round(segundos_inativo)),
+    limite_offline_segundos: env.edgeOfflineAfterSeconds,
+    detalhes,
+  });
 };
 
-// Função 2: Chamada pelo Raspberry Pi (Python) a cada X segundos
-const edgeHeartbeat = async (req, res) => {
-    try {
-        const { id_dispositivo } = req.body;
-        
-        if (!id_dispositivo) {
-            return res.status(400).json({ error: 'ID do dispositivo não fornecido' });
-        }
+// POST /api/status/heartbeat — chamada pela Raspberry Pi a cada 30s.
+exports.edgeHeartbeat = async (req, res) => {
+  const idDispositivo = parseId((req.body || {}).id_dispositivo, 'id_dispositivo');
 
-        // Atualiza a coluna ultima_atividade com o horário atual do servidor (NOW())
-        const query = `
-            UPDATE dispositivo_borda 
-            SET ultima_atividade = NOW() 
-            WHERE id_dispositivo = $1
-            RETURNING id_dispositivo, ultima_atividade;
-        `;
-        
-        const result = await pool.query(query, [id_dispositivo]);
+  const result = await db.query(
+    `UPDATE dispositivo_borda
+        SET ultima_atividade = NOW()
+      WHERE id_dispositivo = $1
+      RETURNING id_dispositivo`,
+    [idDispositivo]
+  );
 
-        if (result.rows.length === 0) {
-             return res.status(404).json({ error: 'Dispositivo não encontrado no banco' });
-        }
+  if (result.rows.length === 0) {
+    throw new HttpError(404, 'Dispositivo não encontrado no banco.');
+  }
 
-        res.status(200).json({ message: 'Heartbeat registrado com sucesso' });
-    } catch (error) {
-        console.error('Erro no heartbeat da edge:', error);
-        res.status(500).json({ error: 'Erro ao registrar heartbeat' });
-    }
+  res.status(200).json({ message: 'Heartbeat registrado com sucesso' });
 };
-
-module.exports = { getEdgeStatus, edgeHeartbeat };

@@ -1,21 +1,23 @@
 const { Pool } = require('pg');
-require('dotenv').config();
+const env = require('./env');
 
-// Cria o pool de conexões com o Neon usando a URL do arquivo .env
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false // Obrigatório para conexões seguras em nuvem (Neon)
-  }
+  connectionString: env.databaseUrl,
+  ssl: env.databaseSsl ? { rejectUnauthorized: env.databaseSslVerify } : false,
+  max: 10,
+  idleTimeoutMillis: 30000,
+  // O Neon "dorme" quando ocioso; a primeira conexão pode demorar alguns segundos.
+  connectionTimeoutMillis: 15000,
 });
 
-// Testa a conexão com o banco
-pool.connect((err, client, release) => {
-  if (err) {
-    return console.error('Erro ao conectar no banco de dados Neon (verifique a DATABASE_URL no .env):', err.message);
-  }
-  console.log('Conectado ao banco de dados Neon com sucesso!');
-  release();
+// Sem este handler, um erro em conexão ociosa derruba o processo inteiro.
+pool.on('error', (err) => {
+  console.error('[DB] Erro em conexão ociosa do pool:', err.message);
 });
+
+async function checkConnection() {
+  await pool.query('SELECT 1');
+}
 
 module.exports = pool;
+module.exports.checkConnection = checkConnection;

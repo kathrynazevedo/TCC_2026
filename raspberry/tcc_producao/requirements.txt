@@ -1,4 +1,8 @@
+ultralytics>=8.3.0
 opencv-python>=4.8.0
 requests>=2.31.0
 numpy>=1.24.0
-tflite-runtime
+python-dotenv>=1.0.0
+# Runtime do modelo .tflite. O Ultralytics usa o que estiver instalado:
+# ai-edge-litert (LiteRT, atual) ou tflite-runtime (legado, sem wheel para Python recente).
+ai-edge-litert

@@ -1,20 +1,26 @@
-import requests
+"""Diagnóstico rápido: a Raspberry alcança a API e a chave está correta?"""
 import sys
 
-API_URL = "http://192.168.0.101:3000/api/alertas"
+import requests
 
-print(f"[REDE] Testando conectividade com a API: {API_URL}")
+import cliente_api
+import config
 
+print(f"[REDE] Testando a API em {config.API_BASE_URL}")
 
 try:
-    # Remove a rota final para testar a raiz do servidor ou faz um head/get rápido
-    url_base = API_URL.rsplit('/', 2)[0] #Pega o IP e a porta
-    response = requests.get(API_URL, timeout=5)
+    saude = requests.get(config.URL_HEALTH, timeout=5)
+    print(f"[REDE] /api/health -> {saude.status_code} {saude.text}")
+except requests.RequestException as erro:
+    print(f"[ERRO] Não foi possível conectar: {erro}")
+    sys.exit(1)
 
-    print(f"[REDE] Conexão bem-sucedida! Status Code: {response.status_code}")
-    print("[SISTEMA] O programa principal pode prosseguir")
+if saude.status_code != 200:
+    print("[ERRO] A API respondeu, mas o banco de dados está indisponível.")
+    sys.exit(1)
 
-except requests.exceptions.RequestException as e:
-    print(f"[ERRO CRÍTICO] falha ao conectar com o servidor: {e}")
-    print("[SISTEMA] Programa encerrado por falha de conectividade.")
+if cliente_api.enviar_heartbeat():
+    print(f"[OK] Heartbeat aceito para o dispositivo {config.ID_DISPOSITIVO}. Tudo pronto.")
+else:
+    print("[ERRO] Heartbeat recusado: confira EDGE_API_KEY e ID_DISPOSITIVO (o dispositivo precisa existir no banco).")
     sys.exit(1)

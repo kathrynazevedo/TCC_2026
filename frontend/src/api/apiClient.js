@@ -1,59 +1,40 @@
-const API_URL = 'http://localhost:3000/api';
+// Padrão "/api": em dev o Vite repassa ao backend; em produção o próprio backend serve o front.
+const API_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 
-export async function getViolations() {
+async function request(path, options = {}) {
+  let response;
   try {
-    const response = await fetch(`${API_URL}/violations`, { cache: 'no-store' });
-    if (!response.ok) throw new Error('Erro ao buscar dados do servidor');
-         
-    const json = await response.json();
-    return json.data;
-  } catch (error) {
-    console.error("Erro na comunicação com a API:", error);
-    return [];
+    response = await fetch(`${API_URL}${path}`, { cache: 'no-store', ...options });
+  } catch {
+    throw new Error('Não foi possível conectar ao servidor. Verifique se a API está em execução.');
   }
-}
 
-export async function updateViolationStatus(id, newStatus) {
-  const response = await fetch(`${API_URL}/violations/${id}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status: newStatus })
-  });
-  if (!response.ok) throw new Error('Erro ao atualizar status');
+  if (!response.ok) {
+    let message = `Erro ${response.status} ao falar com o servidor.`;
+    try {
+      const body = await response.json();
+      if (body && body.error) message = body.error;
+    } catch {
+      // resposta sem JSON: mantém a mensagem genérica
+    }
+    throw new Error(message);
+  }
   return response.json();
 }
 
-export async function getMetrics() {
-  try {
-    const response = await fetch(`${API_URL}/metrics`, { cache: 'no-store' });
-    if (!response.ok) throw new Error('Erro ao buscar métricas');
-    return response.json();
-  } catch (error) {
-    console.error("Erro ao buscar métricas:", error);
-    return null;
-  }
-}
+export const getViolations = async () => (await request('/violations')).data;
 
-  export async function getAreas() {
-  try {
-    const response = await fetch(`${API_URL}/areas`, { cache: 'no-store' });
-    if (!response.ok) throw new Error('Erro ao buscar áreas');
-    const json = await response.json();
-    return json.data;
-    } catch (error) {
-    console.error("Erro ao buscar áreas:", error);
-    return [];
-    }
-}
+export const updateViolationStatus = (id, status) =>
+  request(`/violations/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  });
 
-export async function getWorkers() {
-    try {
-        const response = await fetch(`${API_URL}/workers`, { cache: 'no-store' });
-        if (!response.ok) throw new Error('Erro ao buscar trabalhadores');
-        const json = await response.json();
-        return json.data;
-    } catch (error) {
-        console.error("Erro ao buscar trabalhadores:", error);
-        return [];
-    }
-}
+export const getMetrics = () => request('/metrics');
+
+export const getAreas = async () => (await request('/areas')).data;
+
+export const getWorkers = async () => (await request('/workers')).data;
+
+export const getEdgeStatus = () => request('/status/edge');
