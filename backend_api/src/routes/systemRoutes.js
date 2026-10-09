@@ -1,11 +1,13 @@
 const express = require('express');
-const router = express.Router();
+const edgeAuth = require('../middlewares/edgeAuth');
 const systemController = require('../controllers/systemController');
 
-// Rota consumida pelo React (GET http://localhost:3000/api/status/edge)
+const router = express.Router();
+
+// Consumida pelo React: GET /api/status/edge
 router.get('/edge', systemController.getEdgeStatus);
 
-// Rota consumida pela Raspberry Pi (POST http://localhost:3000/api/status/heartbeat)
-router.post('/heartbeat', systemController.edgeHeartbeat);
+// Consumida pela Raspberry Pi: POST /api/status/heartbeat
+router.post('/heartbeat', edgeAuth, systemController.edgeHeartbeat);
 
 module.exports = router;

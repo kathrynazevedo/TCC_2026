@@ -1,116 +1,136 @@
-const cloudinary = require('../config/cloudinary');
-const db = require('../config/db'); // Pool de conexão com o PostgreSQL (Neon)
+const db = require('../config/db');
+const imageStorage = require('../services/imageStorage');
+const HttpError = require('../utils/httpError');
+const {
+  SEVERITIES,
+  STATUSES,
+  normalizeEpiType,
+  isKnownEpiType,
+  parseId,
+  parseConfidence,
+  parseTimestamp,
+} = require('../utils/validators');
 
-// Função 1: Registrar a infração vinda da Raspberry Pi (Já estava pronta)
+const DEFAULT_LIMIT = 500;
+const MAX_LIMIT = 1000;
+
+// POST /api/violations — chamada pela Raspberry Pi (multipart/form-data, campo "image").
 exports.registrarInfracao = async (req, res) => {
-    try {
-        const { id_dispositivo, tipo_epi_ausente, timestamp, confidence, severity } = req.body;
-        const file = req.file;
-        
-        if (!file) {
-            return res.status(400).json({ error: 'Nenhuma imagem de infração foi enviada.' });
-        }
+  const { id_dispositivo, tipo_epi_ausente, timestamp, confidence, severity } = req.body;
 
-        // Upload da evidência para o Cloudinary
-        const base64Image = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
-        const uploadResult = await cloudinary.uploader.upload(base64Image, {
-            folder: 'tcc_infracoes_epi',
-        });
-        const imageUrl = uploadResult.secure_url;
+  // 1. Valida tudo ANTES de gastar upload no Cloudinary.
+  if (!req.file) {
+    throw new HttpError(400, 'Nenhuma imagem de infração foi enviada (campo "image").');
+  }
+  const idDispositivo = parseId(id_dispositivo, 'id_dispositivo');
 
-        const sql = `
-            INSERT INTO infracao 
-            (id_dispositivo, tipo_epi_ausente, score_confianca, timestamp_deteccao, imagem_url, sincronizado_nuvem, status_resolucao, severidade) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING id_infracao;
-        `;
-                 
-        const dataInfracao = timestamp ? new Date(timestamp) : new Date();
-        const score_confianca = confidence || 0.95;
-        const severidadeVal = severity || 'high';
+  const tipoEpi = normalizeEpiType(tipo_epi_ausente);
+  if (!isKnownEpiType(tipoEpi)) {
+    throw new HttpError(400, 'tipo_epi_ausente inválido. Use "no-helmet" ou "no-vest".');
+  }
 
-        const values = [
-            id_dispositivo || 1,
-            tipo_epi_ausente, 
-            score_confianca, 
-            dataInfracao, 
-            imageUrl, 
-            true, 
-            'active',
-            severidadeVal
-        ];
+  const severidade = severity || 'high';
+  if (!SEVERITIES.includes(severidade)) {
+    throw new HttpError(400, `severity inválida. Use: ${SEVERITIES.join(', ')}.`);
+  }
 
-        const result = await db.query(sql, values);
-        const insertId = result.rows[0].id_infracao;
+  const scoreConfianca = parseConfidence(confidence);
+  const dataInfracao = parseTimestamp(timestamp);
 
-        return res.status(201).json({
-            message: 'Infração registrada com sucesso no sistema!',
-            data: {
-                id_infracao: insertId,
-                id_dispositivo: values[0],
-                tipo_epi_ausente: values[1],
-                image_url: imageUrl,
-                timestamp: dataInfracao
-            }
-        });
-    } catch (error) {
-        console.error("Erro ao registrar infração:", error);
-        return res.status(500).json({ error: 'Erro interno no servidor ao processar o alerta.' });
-    }
+  const device = await db.query('SELECT 1 FROM dispositivo_borda WHERE id_dispositivo = $1', [idDispositivo]);
+  if (device.rows.length === 0) {
+    throw new HttpError(404, 'Dispositivo não cadastrado.');
+  }
+
+  // 2. Guarda a evidência e só então grava no banco; se o banco falhar, remove a imagem órfã.
+  const { url, publicId } = await imageStorage.uploadEvidence(req.file.buffer);
+
+  try {
+    const result = await db.query(
+      `INSERT INTO infracao
+         (id_dispositivo, tipo_epi_ausente, score_confianca, timestamp_deteccao,
+          imagem_url, sincronizado_nuvem, status_resolucao, severidade)
+       VALUES ($1, $2, $3, $4, $5, TRUE, 'active', $6)
+       RETURNING id_infracao`,
+      [idDispositivo, tipoEpi, scoreConfianca, dataInfracao, url, severidade]
+    );
+
+    return res.status(201).json({
+      message: 'Infração registrada com sucesso no sistema!',
+      data: {
+        id_infracao: result.rows[0].id_infracao,
+        id_dispositivo: idDispositivo,
+        tipo_epi_ausente: tipoEpi,
+        image_url: url,
+        timestamp: dataInfracao,
+      },
+    });
+  } catch (error) {
+    await imageStorage.deleteEvidence(publicId);
+    throw error;
+  }
 };
 
-// Função 2: Buscar infrações para o Dashboard e Tela de Violações
+// GET /api/violations?limit=500&status=active — dashboard e tela de violações.
 exports.getViolations = async (req, res) => {
-    try {
-        const query = `
-            SELECT 
-                i.id_infracao AS id,
-                i.id_dispositivo,
-                COALESCE(a.nome_area, 'Zona Geral') AS zone,
-                i.tipo_epi_ausente AS type,
-                COALESCE(i.severidade, 'high') AS severity,
-                COALESCE(i.status_resolucao, 'active') AS status,
-                i.timestamp_deteccao AS detected_at,
-                i.imagem_url
-            FROM infracao i
-            LEFT JOIN dispositivo_borda d ON i.id_dispositivo = d.id_dispositivo
-            LEFT JOIN area a ON d.id_area = a.id_area
-            ORDER BY i.timestamp_deteccao DESC;
-        `;
-        
-        const result = await db.query(query);
-        res.status(200).json({ data: result.rows });
-    } catch (error) {
-        console.error("Erro ao buscar infrações:", error);
-        res.status(500).json({ error: 'Erro ao buscar infrações do banco de dados' });
+  const requested = req.query.limit === undefined ? DEFAULT_LIMIT : parseId(req.query.limit, 'limit');
+  const limit = Math.min(requested, MAX_LIMIT);
+
+  const params = [limit];
+  let where = '';
+  if (req.query.status !== undefined) {
+    if (!STATUSES.includes(req.query.status)) {
+      throw new HttpError(400, `status inválido. Use: ${STATUSES.join(', ')}.`);
     }
+    params.push(req.query.status);
+    where = 'WHERE COALESCE(i.status_resolucao, \'active\') = $2';
+  }
+
+  const result = await db.query(
+    `SELECT
+        i.id_infracao AS id,
+        i.id_dispositivo,
+        COALESCE(a.nome_area, 'Zona Geral') AS zone,
+        i.tipo_epi_ausente AS type,
+        COALESCE(i.severidade, 'high') AS severity,
+        COALESCE(i.status_resolucao, 'active') AS status,
+        i.score_confianca AS confidence,
+        i.timestamp_deteccao AS detected_at,
+        i.imagem_url
+     FROM infracao i
+     LEFT JOIN dispositivo_borda d ON i.id_dispositivo = d.id_dispositivo
+     LEFT JOIN area a ON d.id_area = a.id_area
+     ${where}
+     ORDER BY i.timestamp_deteccao DESC
+     LIMIT $1`,
+    params
+  );
+
+  // Registros antigos podem ter "Capacete"/"Colete"; o dashboard sempre recebe o código canônico.
+  const data = result.rows.map((row) => ({ ...row, type: normalizeEpiType(row.type) }));
+  res.status(200).json({ data });
 };
 
-// Função 3: Atualizar status da infração (Ativa -> Reconhecida -> Resolvida)
+// PATCH /api/violations/:id — Ativa -> Reconhecida -> Resolvida.
 exports.updateStatus = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { status } = req.body; // Espera 'active', 'acknowledged' ou 'resolved'
+  const id = parseId(req.params.id);
+  const { status } = req.body || {};
 
-        const query = `
-            UPDATE infracao 
-            SET status_resolucao = $1 
-            WHERE id_infracao = $2 
-            RETURNING id_infracao, status_resolucao;
-        `;
-        
-        const result = await db.query(query, [status, id]);
+  if (!STATUSES.includes(status)) {
+    throw new HttpError(400, `status inválido. Use: ${STATUSES.join(', ')}.`);
+  }
 
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Infração não encontrada.' });
-        }
+  const result = await db.query(
+    `UPDATE infracao
+        SET status_resolucao = $1
+      WHERE id_infracao = $2
+      RETURNING id_infracao, status_resolucao`,
+    [status, id]
+  );
 
-        res.status(200).json({ 
-            message: "Status atualizado com sucesso", 
-            data: result.rows[0] 
-        });
-    } catch (error) {
-        console.error("Erro ao atualizar status da infração:", error);
-        res.status(500).json({ error: 'Erro ao atualizar status no banco de dados' });
-    }
+  if (result.rows.length === 0) {
+    throw new HttpError(404, 'Infração não encontrada.');
+  }
+
+  res.status(200).json({ message: 'Status atualizado com sucesso', data: result.rows[0] });
 };

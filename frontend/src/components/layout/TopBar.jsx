@@ -4,8 +4,12 @@ import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import Sidebar from "./Sidebar";
 import NotificationPanel from "./NotificationPanel";
+import { useAuth } from "@/lib/AuthContext";
+import { initials } from "@/lib/format";
 
 export default function TopBar({ isDarkMode, setIsDarkMode }) {
+  const { user } = useAuth();
+
   return (
     <header className="sticky top-0 z-40 flex h-20 shrink-0 items-center gap-x-4 border-b border-slate-200/60 dark:border-slate-800/60 bg-white/80 dark:bg-[#09090b]/80 backdrop-blur-md px-4 sm:px-6 lg:px-8 transition-colors duration-300">
       
@@ -48,6 +52,7 @@ export default function TopBar({ isDarkMode, setIsDarkMode }) {
           <Button
             variant="ghost"
             size="icon"
+            aria-label="Alternar tema"
             onClick={() => setIsDarkMode(!isDarkMode)}
             className="text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-all"
           >
@@ -60,11 +65,11 @@ export default function TopBar({ isDarkMode, setIsDarkMode }) {
           
           <div className="flex items-center gap-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 p-1.5 rounded-xl transition-colors">
              <div className="hidden sm:block text-right">
-                <p className="text-sm font-bold text-slate-800 dark:text-slate-100 leading-none">Administrador</p>
+                <p className="text-sm font-bold text-slate-800 dark:text-slate-100 leading-none">{user.role}</p>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">Gestão Completa</p>
              </div>
              <div className="h-9 w-9 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white text-xs font-bold shadow-md shadow-blue-500/20 border-2 border-white dark:border-slate-800 shrink-0">
-                RA
+                {initials(user.name)}
              </div>
           </div>
         </div>

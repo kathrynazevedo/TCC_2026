@@ -2,6 +2,8 @@ import React from "react";
 import { Link, useLocation } from "react-router-dom";
 import { LayoutDashboard, AlertCircle, Map, Users, Settings, ShieldCheck, FileText, ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/lib/AuthContext";
+import { initials, shortName } from "@/lib/format";
 
 const menuItems = [
   { icon: LayoutDashboard, label: "Dashboard", path: "/" },
@@ -14,6 +16,7 @@ const menuItems = [
 
 export default function Sidebar({ isCollapsed, setIsCollapsed }) {
   const location = useLocation();
+  const { user } = useAuth();
 
   return (
     <div className="flex flex-col h-full bg-[#0f172a] text-slate-300 shadow-2xl relative">
@@ -70,11 +73,11 @@ export default function Sidebar({ isCollapsed, setIsCollapsed }) {
       <div className={cn("border-t border-slate-800/50 bg-slate-900/20 transition-all duration-300 overflow-hidden", isCollapsed ? "p-3" : "p-6")}>
         <div className={cn("flex items-center", isCollapsed ? "justify-center" : "gap-3 mb-4")}>
           <div className="h-9 w-9 shrink-0 rounded-full bg-slate-700 flex items-center justify-center text-white text-xs font-bold border border-slate-600">
-            RA
+            {initials(user.name)}
           </div>
           {!isCollapsed && (
             <div className="animate-in fade-in duration-300 whitespace-nowrap">
-              <p className="text-sm font-bold text-white">Renan A.</p>
+              <p className="text-sm font-bold text-white">{shortName(user.name)}</p>
               <p className="text-[10px] text-green-400 font-medium flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
                 Admin Online

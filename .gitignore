@@ -1,6 +1,7 @@
-#env
+# Variáveis de ambiente (segredos). Os modelos .env.example SÃO versionados.
 .env
 .env.*
+!.env.example
 
 # Logs
 /logs
@@ -11,12 +12,25 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Node
 node_modules
 dist
 dist-ssr
 *.local
+.vite
 
-# Editor directories and files
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Raspberry Pi: fotos de infrações (dados sensíveis) e fila offline não vão para o Git
+raspberry/**/pendentes/
+raspberry/**/infrações/
+raspberry/**/*.jpg
+
+# Editores e sistema
 .vscode/*
 !.vscode/extensions.json
 .idea
@@ -27,5 +41,5 @@ dist-ssr
 *.sln
 *.sw?
 
-.env
-.vite
+# Worktrees locais do Claude Code
+.claude/worktrees/

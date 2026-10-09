@@ -1,37 +1,43 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
+const env = require('./src/config/env');
+const db = require('./src/config/db');
+const createApp = require('./src/app');
 
-// Importação da conexão com o banco (opcional manter aqui se não for usar direto no server)
-const pool = require('./src/config/db');
+if (env.isProduction && !env.edgeApiKey) {
+  console.error('[CONFIG] Defina EDGE_API_KEY: em produção as rotas da placa exigem autenticação.');
+  process.exit(1);
+}
+if (!env.databaseUrl) {
+  console.error('[CONFIG] DATABASE_URL não definida. Copie .env.example para .env e preencha.');
+  process.exit(1);
+}
+if (!env.edgeApiKey) {
+  console.warn('[CONFIG] EDGE_API_KEY vazia: as rotas da placa estão abertas (aceitável só em desenvolvimento).');
+}
 
-// Importando todas as rotas
-const systemRoutes = require('./src/routes/systemRoutes');
-const violationRoutes = require('./src/routes/violationRoutes');
-const metricsRoutes = require('./src/routes/metricsRoutes');
-const areaRoutes = require('./src/routes/areaRoutes');
-const workersRoutes = require('./src/routes/workersRoutes'); // <-- Adicionado
+const app = createApp();
 
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-// Middlewares
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// Rota de Health Check (Teste simples)
-app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'OK', message: 'API rodando!' });
+const server = app.listen(env.port, async () => {
+  console.log(`Servidor rodando na porta ${env.port}`);
+  try {
+    await db.checkConnection();
+    console.log('Conectado ao banco de dados com sucesso!');
+  } catch (error) {
+    console.error('Falha ao conectar no banco (verifique DATABASE_URL e SSL no .env):', error.message);
+  }
 });
 
-// Registrando as Rotas da API
-app.use('/api/status', systemRoutes);
-app.use('/api/violations', violationRoutes);
-app.use('/api/metrics', metricsRoutes);
-app.use('/api/areas', areaRoutes);
-app.use('/api/workers', workersRoutes); // <-- Adicionado
+// Encerramento limpo: para de aceitar conexões, termina as em andamento e fecha o pool.
+function shutdown(signal) {
+  console.log(`\n${signal} recebido, encerrando...`);
+  server.close(async () => {
+    await db.end().catch(() => {});
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(1), 10000).unref();
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-app.listen(PORT, () => {
-  console.log(`🚀 Servidor rodando na porta ${PORT}`);
+process.on('unhandledRejection', (reason) => {
+  console.error('[PROCESSO] Promise rejeitada sem tratamento:', reason);
 });

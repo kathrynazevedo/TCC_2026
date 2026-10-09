@@ -4,90 +4,42 @@ import { Button } from "@/components/ui/button";
 import { FileText, Download, FileBarChart, HardHat, Loader2, CheckCircle } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import { getViolations } from "@/api/apiClient";
-import jsPDF from "jspdf";
-import "jspdf-autotable";
-import moment from "moment";
+import { useAuth } from "@/lib/AuthContext";
+import { exportCsv, exportDdsPdf, exportEvidenceZip } from "@/lib/reports";
 
 export default function Docs() {
   const { toast } = useToast();
-  const [isGeneratingDDS, setIsGeneratingDDS] = useState(false);
+  const { user } = useAuth();
+  const [busy, setBusy] = useState(null); // "dds" | "csv" | "zip" | null
 
-  // Função para gerar o Relatório PDF Real
-  const handleGenerateDDS = async () => {
+  // Busca os dados reais, gera o arquivo e avisa o resultado. Só um relatório por vez.
+  const run = (key, generate) => async () => {
     try {
-      setIsGeneratingDDS(true);
-      
-      // 1. Busca os dados reais do backend
+      setBusy(key);
       const violations = await getViolations();
-      
-      // 2. Inicializa o documento PDF
-      const doc = new jsPDF();
-      
-      // 3. Cabeçalho do PDF (Design)
-      doc.setFontSize(22);
-      doc.setTextColor(30, 41, 59); // slate-800
-      doc.text("SafeWork - Relatório de Auditoria (DDS)", 14, 22);
-      
-      doc.setFontSize(11);
-      doc.setTextColor(100, 116, 139); // slate-500
-      doc.text(`Data de Emissão: ${moment().format('DD/MM/YYYY HH:mm')}`, 14, 30);
-      doc.text(`Responsável: Administrador do Sistema`, 14, 36);
-
-      // Linha separadora
-      doc.setDrawColor(226, 232, 240); // slate-200
-      doc.line(14, 42, 196, 42);
-
-      // 4. Preparar os dados para a tabela
-      const tableData = violations.slice(0, 40).map(v => [
-        moment(v.detected_at).format("DD/MM/YYYY HH:mm"),
-        v.zone || "Geral",
-        v.type === 'no-helmet' ? 'Ausência de Capacete' : (v.type === 'no-vest' ? 'Ausência de Colete' : v.type),
-        v.severity === 'high' ? 'ALTA' : (v.severity === 'medium' ? 'MÉDIA' : 'BAIXA'),
-        v.status === 'active' ? 'PENDENTE' : (v.status === 'acknowledged' ? 'EM ANÁLISE' : 'RESOLVIDO')
-      ]);
-
-      // 5. Desenhar a Tabela Profissional
-      doc.autoTable({
-        startY: 50,
-        head: [['Data / Hora', 'Zona de Risco', 'Tipo de Infração', 'Severidade', 'Status']],
-        body: tableData,
-        theme: 'grid',
-        headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold' }, // Azul do Tailwind (blue-600)
-        alternateRowStyles: { fillColor: [248, 250, 252] }, // slate-50
-        styles: { fontSize: 9, cellPadding: 4 },
-        didDrawPage: function (data) {
-          // Rodapé em todas as páginas
-          doc.setFontSize(8);
-          doc.setTextColor(148, 163, 184);
-          doc.text(
-            `SafeWork - Visão Computacional para Segurança do Trabalho - Página ${doc.internal.getNumberOfPages()}`,
-            data.settings.margin.left,
-            doc.internal.pageSize.height - 10
-          );
-        }
-      });
-
-      // 6. Salvar e baixar o arquivo
-      doc.save(`SafeWork_DDS_${moment().format('DD-MM-YYYY')}.pdf`);
-
-      // 7. Feedback de Sucesso na Interface
+      if (violations.length === 0) {
+        toast({ title: "Nenhuma ocorrência registrada", description: "Não há dados para gerar este relatório." });
+        return;
+      }
+      const result = await generate(violations);
       toast({
         title: "Relatório gerado com sucesso!",
-        description: "O download do PDF começará automaticamente.",
+        description: result?.falhas
+          ? `${result.baixadas} imagem(ns) incluída(s); ${result.falhas} indisponível(is).`
+          : "O download começará automaticamente.",
         className: "bg-green-50 border-green-200 text-green-900",
       });
-
     } catch (error) {
-      console.error("Erro ao gerar PDF:", error);
-      toast({
-        title: "Erro ao gerar relatório",
-        description: "Verifique a conexão com o servidor.",
-        variant: "destructive"
-      });
+      console.error("Erro ao gerar relatório:", error);
+      toast({ title: "Erro ao gerar relatório", description: error.message, variant: "destructive" });
     } finally {
-      setIsGeneratingDDS(false);
+      setBusy(null);
     }
   };
+
+  const handleGenerateDDS = run("dds", (violations) => exportDdsPdf(violations, user.role));
+  const handleExportCsv = run("csv", async (violations) => exportCsv(violations));
+  const handleExportZip = run("zip", exportEvidenceZip);
 
   return (
     <div className="space-y-8 max-w-[1200px] mx-auto animate-in fade-in duration-500">
@@ -99,7 +51,7 @@ export default function Docs() {
             Central de Relatórios
           </h1>
           <p className="text-slate-300 mt-2 text-sm max-w-xl leading-relaxed">
-            Geração de documentos oficias, planilhas de conformidade e histórico de ocorrências para apresentação em auditorias (NR-06 e NR-18) e reuniões da CIPA.
+            Geração de documentos oficiais, planilhas de conformidade e histórico de ocorrências para apresentação em auditorias (NR-06 e NR-18) e reuniões da CIPA.
           </p>
         </div>
         <div className="bg-white/10 p-4 rounded-xl backdrop-blur-sm border border-white/10 hidden md:block">
@@ -125,10 +77,10 @@ export default function Docs() {
             </p>
             <Button 
               onClick={handleGenerateDDS} 
-              disabled={isGeneratingDDS}
-              className={`w-full text-white shadow-md transition-all ${isGeneratingDDS ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 hover:-translate-y-0.5'}`}
+              disabled={busy !== null}
+              className={`w-full text-white shadow-md transition-all ${busy === "dds" ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 hover:-translate-y-0.5'}`}
             >
-              {isGeneratingDDS ? (
+              {busy === "dds" ? (
                 <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Gerando PDF...</>
               ) : (
                 <><Download className="w-4 h-4 mr-2" /> Baixar PDF</>
@@ -146,10 +98,19 @@ export default function Docs() {
             </div>
             <h3 className="font-bold text-slate-900 dark:text-slate-100 text-xl mb-2">Auditoria Mensal</h3>
             <p className="text-sm text-slate-500 dark:text-slate-400 mb-8 flex-1 leading-relaxed">
-              Planilha bruta (Excel/CSV) detalhada por setor e funcionário. Ideal para cruzamento de dados e apresentação gerencial à diretoria.
+              Planilha completa (CSV, abre direto no Excel) com todas as ocorrências por zona, tipo e status. Ideal para cruzamento de dados e apresentação gerencial à diretoria.
             </p>
-            <Button variant="outline" className="w-full text-green-700 dark:text-green-400 border-green-200 dark:border-green-900/50 hover:bg-green-50 dark:hover:bg-green-900/20 bg-transparent transition-all">
-              <Download className="w-4 h-4 mr-2" /> Exportar Excel
+            <Button
+              onClick={handleExportCsv}
+              disabled={busy !== null}
+              variant="outline"
+              className="w-full text-green-700 dark:text-green-400 border-green-200 dark:border-green-900/50 hover:bg-green-50 dark:hover:bg-green-900/20 bg-transparent transition-all"
+            >
+              {busy === "csv" ? (
+                <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Gerando planilha...</>
+              ) : (
+                <><Download className="w-4 h-4 mr-2" /> Exportar Excel (CSV)</>
+              )}
             </Button>
           </CardContent>
         </Card>
@@ -163,10 +124,19 @@ export default function Docs() {
             </div>
             <h3 className="font-bold text-slate-900 dark:text-slate-100 text-xl mb-2">Backup de Evidências</h3>
             <p className="text-sm text-slate-500 dark:text-slate-400 mb-8 flex-1 leading-relaxed">
-              Baixe um pacote criptografado contendo as imagens reais das infrações para respaldo jurídico e armazenamento frio.
+              Baixe um pacote ZIP com as imagens reais das 50 infrações mais recentes e a planilha correspondente, para respaldo jurídico e armazenamento frio.
             </p>
-            <Button variant="outline" className="w-full text-orange-700 dark:text-orange-400 border-orange-200 dark:border-orange-900/50 hover:bg-orange-50 dark:hover:bg-orange-900/20 bg-transparent transition-all">
-              <Download className="w-4 h-4 mr-2" /> Gerar Arquivo ZIP
+            <Button
+              onClick={handleExportZip}
+              disabled={busy !== null}
+              variant="outline"
+              className="w-full text-orange-700 dark:text-orange-400 border-orange-200 dark:border-orange-900/50 hover:bg-orange-50 dark:hover:bg-orange-900/20 bg-transparent transition-all"
+            >
+              {busy === "zip" ? (
+                <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Baixando imagens...</>
+              ) : (
+                <><Download className="w-4 h-4 mr-2" /> Gerar Arquivo ZIP</>
+              )}
             </Button>
           </CardContent>
         </Card>

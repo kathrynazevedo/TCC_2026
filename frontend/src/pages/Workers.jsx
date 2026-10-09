@@ -1,16 +1,13 @@
 import React from "react";
-import { useQuery } from "@tanstack/react-query";
-import { getWorkers } from "@/api/apiClient";
+import { useWorkers } from "@/api/queries";
+import ApiErrorNotice from "@/components/common/ApiErrorNotice";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Users, AlertTriangle } from "lucide-react";
 
 export default function Workers() {
-  const { data: workers = [], isLoading } = useQuery({
-    queryKey: ["workers"],
-    queryFn: getWorkers,
-  });
+  const { data: workers = [], isLoading, error } = useWorkers();
 
   return (
     <div className="space-y-6 max-w-[1400px] mx-auto animate-in fade-in duration-500">
@@ -18,7 +15,9 @@ export default function Workers() {
         <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Equipe Operacional</h1>
         <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">Gestão de funcionários autorizados no canteiro de obras</p>
       </div>
-                    
+
+      <ApiErrorNotice error={error} />
+
       <Card className="shadow-sm border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
         <CardHeader className="border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 rounded-t-xl">
           <CardTitle className="flex items-center gap-2 text-slate-800 dark:text-slate-200">
@@ -64,7 +63,7 @@ export default function Workers() {
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      <Badge className={worker.status === 'Ativo' ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 border-none hover:bg-green-200 dark:hover:bg-green-900/50" : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-none"}>
+                      <Badge className={worker.status?.toLowerCase() === 'ativo' ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 border-none hover:bg-green-200 dark:hover:bg-green-900/50" : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-none"}>
                         {worker.status}
                       </Badge>
                     </TableCell>
