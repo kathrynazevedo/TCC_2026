@@ -46,7 +46,7 @@ Sistema de câmera inteligente baseado em Visão Computacional que monitora cant
 
 ```text
 .
-├── package.json              # scripts da raiz (install:all, dev:api, dev:web, build, start, test)
+├── package.json              # scripts da raiz (install:all, dev, dev:api, dev:web, build, start, test)
 ├── backend_api/
 │   ├── server.js             # inicializa o servidor (porta, encerramento limpo)
 │   ├── src/
@@ -95,14 +95,18 @@ Execute no banco, nesta ordem: `backend_api/db/schema.sql` e, para ter dados de 
 ```bash
 npm run install:all
 cp backend_api/.env.example backend_api/.env   # preencha DATABASE_URL, CLOUDINARY_* e EDGE_API_KEY
-npm run dev:api                                # http://localhost:3000
 ```
 
-### 3. Dashboard (desenvolvimento)
+No Windows (CMD), use `copy backend_api\.env.example backend_api\.env`.
+
+### 3. Subir tudo (desenvolvimento)
 
 ```bash
-npm run dev:web                                # http://localhost:5173
+npm run dev     # API em http://localhost:3000 + dashboard em http://localhost:5173
 ```
+
+Um único terminal roda os dois servidores (logs prefixados com `[api]` e `[web]`); `Ctrl+C` encerra ambos.
+Para subir só um deles: `npm run dev:api` ou `npm run dev:web`.
 
 O Vite repassa `/api` para `localhost:3000`, então não há configuração extra nem problema de CORS.
 
@@ -140,6 +144,7 @@ Se a API estiver fora do ar, os alertas ficam em `pendentes/` e são reenviados 
 | `POST` | `/api/violations` | Raspberry 🔑 | Registra uma infração isolada (formato antigo, mantido por compatibilidade; `multipart`: `image`, `id_dispositivo`, `tipo_epi_ausente`, `confidence`, `timestamp`, `severity`) |
 | `GET` | `/api/violations?limit=&status=` | dashboard | Lista infrações (mais recentes primeiro, máx. 1000). Cada uma traz também `occurrence_id`, `person_number`, `people_total` e `people` (a cena) |
 | `PATCH` | `/api/violations/:id` | dashboard | Altera status: `active` → `acknowledged` → `resolved` |
+| `DELETE` | `/api/violations` | dashboard 🔒 | Exclui em lote do banco e do Cloudinary: `{ "ids": [1, 2], "password": "..." }`. Senha em `DELETE_PASSWORD` (padrão `12345`); errada → `403` |
 | `GET` | `/api/metrics` | dashboard | Totais, não conformidades, taxa de segurança, câmeras |
 | `GET` | `/api/areas` | dashboard | Zonas com seus dispositivos e se estão online |
 | `GET` | `/api/workers` | dashboard | Equipe cadastrada |
@@ -148,7 +153,7 @@ Se a API estiver fora do ar, os alertas ficam em `pendentes/` e são reenviados 
 
 🔑 exige o header `x-api-key` com o valor de `EDGE_API_KEY`.
 
-Códigos de tipo de EPI: `no-helmet` (sem capacete) e `no-vest` (sem colete).
+Códigos de tipo de EPI: `no-helmet` (sem capacete), `no-vest` (sem colete) e `no-helmet-no-vest` (sem capacete **e** sem colete). Quando a **mesma pessoa** está sem capacete e sem colete na mesma captura, a API grava **um único** registro `no-helmet-no-vest`, em vez de dois. Duas pessoas diferentes (uma sem capacete, outra sem colete) continuam em registros separados.
 
 ### Ocorrência: a cena inteira numa única requisição
 
@@ -173,7 +178,7 @@ Em vez de uma requisição por infração (cada uma repetindo a mesma foto), a p
 
 - `numero`: posição da pessoa por ordem de chegada entre quem está em cena (a mesma numeração desenhada na foto).
 - `estado`: `ok`, `ausente` ou `desconhecido` (a parte do corpo não foi detectada; nunca vira infração).
-- `novo`: `true` só no que disparou um alerta agora. É isso que a API grava em `infracao` (uma linha por EPI novo, com `id_ocorrencia` e `numero_pessoa`); o restante fica na cena como contexto.
+- `novo`: `true` só no que disparou um alerta agora. É isso que a API grava em `infracao` (uma linha por pessoa e EPI novo, com `id_ocorrencia` e `numero_pessoa`; capacete + colete novos da mesma pessoa viram uma linha `no-helmet-no-vest`); o restante fica na cena como contexto.
 - A ocorrência e suas infrações são gravadas numa **transação**: ou entra tudo, ou nada (a foto órfã é removida do Cloudinary).
 - `total_pessoas` é a contagem em cena (pode incluir quem acabou de sair do enquadramento) e nunca é menor que a lista `pessoas`.
 
@@ -184,7 +189,8 @@ Veja os modelos `backend_api/.env.example`, `frontend/.env.example` e `raspberry
 ## ✅ Testes
 
 ```bash
-npm test                                                  # API: 26 testes de integração
+npm test                                                  # API: 33 testes de integração
+(cd raspberry/tcc_producao && python -m unittest discover -s tests)   # placa: 40 testes (sem câmera nem modelo)
 npm run lint                                              # frontend
 ```
 

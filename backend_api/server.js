@@ -13,6 +13,9 @@ if (!env.databaseUrl) {
 if (!env.edgeApiKey) {
   console.warn('[CONFIG] EDGE_API_KEY vazia: as rotas da placa estão abertas (aceitável só em desenvolvimento).');
 }
+if (env.isProduction && !process.env.DELETE_PASSWORD) {
+  console.warn('[CONFIG] DELETE_PASSWORD não definida: a exclusão de infrações usa a senha padrão do projeto.');
+}
 
 const app = createApp();
 

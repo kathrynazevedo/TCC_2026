@@ -1,9 +1,16 @@
 import React, { useMemo } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Badge } from "@/components/ui/badge";
-import { AlertCircle, MapPin } from "lucide-react";
+import { MapPin, Radio } from "lucide-react";
+import StatusTag from "@/components/common/StatusTag";
+import { cn } from "@/lib/utils";
 import { formatDateTime } from "@/lib/format";
 import { typeLabel, personLabel } from "@/lib/violationLabels";
+
+const BAR = {
+  active: "border-l-destructive",
+  acknowledged: "border-l-warning",
+  resolved: "border-l-success/60",
+};
 
 export default function AlertFeed({ violations = [], total }) {
   // A API já devolve do mais recente para o mais antigo; só garantimos a ordem.
@@ -13,45 +20,46 @@ export default function AlertFeed({ violations = [], total }) {
   );
 
   return (
-    <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col h-[600px] transition-colors">
-      <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-800/50 rounded-t-xl">
-        <h2 className="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
-          <AlertCircle className="text-red-500 dark:text-red-400 w-5 h-5" />
-          Log de Eventos Críticos
+    <section className="panel flex h-[640px] flex-col overflow-hidden">
+      <div className="flex items-center justify-between gap-3 border-b border-border bg-surface px-5 py-4">
+        <h2 className="display flex items-center gap-2.5 text-xl text-foreground">
+          <Radio className="h-5 w-5 text-destructive" />
+          Log de eventos
         </h2>
-        <Badge className="bg-white dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700" variant="outline">
+        <span className="border border-border bg-background px-2 py-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
           {total ?? violations.length} total
-        </Badge>
+        </span>
       </div>
 
       <ScrollArea className="flex-1">
         {sorted.length === 0 ? (
-          <p className="p-8 text-center text-sm text-slate-400">Nenhum evento registrado.</p>
+          <p className="p-8 text-center font-mono text-xs uppercase tracking-wider text-muted-foreground">Nenhum evento registrado.</p>
         ) : (
-          <div className="divide-y divide-slate-100 dark:divide-slate-800">
+          <ul className="divide-y divide-border">
             {sorted.map((v) => (
-              <div key={v.id} className={`p-4 transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/30 ${v.status === "active" ? "border-l-4 border-l-red-500" : ""}`}>
-                <div className="flex justify-between items-start">
-                  <span className="text-sm font-bold text-slate-700 dark:text-slate-200 uppercase">
-                    ⚠️ {typeLabel(v.type, "alert")}
+              <li
+                key={v.id}
+                className={cn("border-l-[3px] px-4 py-3 transition-colors hover:bg-accent/50", BAR[v.status] || BAR.active)}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <span className="text-sm font-bold uppercase leading-tight tracking-wide text-foreground">{typeLabel(v.type, "alert")}</span>
+                  <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">
+                    {formatDateTime(v.detected_at, "HH:mm:ss")}
                   </span>
-                  <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500">{formatDateTime(v.detected_at, "HH:mm:ss")}</span>
                 </div>
-                <div className="flex items-center gap-2 mt-2">
-                  <MapPin className="text-slate-400 dark:text-slate-500" size={12} />
-                  <span className="text-xs text-slate-600 dark:text-slate-400 font-medium">{v.zone}</span>
-                  {personLabel(v) && (
-                    <span className="text-xs text-slate-500 dark:text-slate-400">· {personLabel(v)}</span>
-                  )}
-                  <Badge className="ml-auto text-[10px] h-5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-none">
-                    {v.status === "active" ? "PENDENTE" : v.status === "acknowledged" ? "EM ANÁLISE" : "RESOLVIDO"}
-                  </Badge>
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                    <MapPin className="h-3 w-3 shrink-0" />
+                    <span className="truncate">{v.zone}</span>
+                    {personLabel(v) && <span className="shrink-0 font-mono">· {personLabel(v)}</span>}
+                  </span>
+                  <StatusTag status={v.status} />
                 </div>
-              </div>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
       </ScrollArea>
-    </div>
+    </section>
   );
 }

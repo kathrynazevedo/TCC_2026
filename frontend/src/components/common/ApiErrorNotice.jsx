@@ -8,12 +8,12 @@ export default function ApiErrorNotice({ error }) {
   return (
     <div
       role="alert"
-      className="flex items-start gap-3 rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-900/20 p-4 text-sm text-red-800 dark:text-red-300"
+      className="flex items-start gap-3 border border-destructive/40 border-l-4 border-l-destructive bg-destructive/10 p-4 text-sm text-foreground"
     >
-      <WifiOff className="w-5 h-5 shrink-0 mt-0.5" />
+      <WifiOff className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
       <div>
-        <p className="font-semibold">Falha ao carregar os dados</p>
-        <p className="text-red-700/90 dark:text-red-300/80">{error.message} Tentando novamente automaticamente.</p>
+        <p className="font-mono text-xs font-bold uppercase tracking-wider text-destructive">Falha ao carregar os dados</p>
+        <p className="mt-1 text-muted-foreground">{error.message} Tentando novamente automaticamente.</p>
       </div>
     </div>
   );

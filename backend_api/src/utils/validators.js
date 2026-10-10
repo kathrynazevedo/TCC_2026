@@ -4,7 +4,11 @@ const SEVERITIES = ['low', 'medium', 'high', 'critical'];
 const STATUSES = ['active', 'acknowledged', 'resolved'];
 
 // Códigos canônicos usados em todo o sistema (placa, banco e dashboard).
+// 'no-helmet-no-vest' = a mesma pessoa/quadro sem capacete E sem colete (um único registro, não dois).
 const EPI_ALIASES = {
+  'no-helmet-no-vest': 'no-helmet-no-vest',
+  'sem_capacete_colete': 'no-helmet-no-vest',
+  'sem-capacete-colete': 'no-helmet-no-vest',
   'no-helmet': 'no-helmet',
   'sem_capacete': 'no-helmet',
   'sem-capacete': 'no-helmet',
@@ -60,6 +64,7 @@ const EPI_STATES = ['ok', 'ausente', 'desconhecido'];
 const MAX_PEOPLE = 50;
 // Chave do JSON da placa -> código canônico da infração.
 const EPI_KEYS = { capacete: 'no-helmet', colete: 'no-vest' };
+const BOTH_TYPE = 'no-helmet-no-vest'; // mesma pessoa sem capacete e sem colete: um registro só
 
 function parseBox(value, label) {
   if (value === undefined || value === null) return null;
@@ -90,7 +95,8 @@ function parseEpiState(value, label) {
 /**
  * Valida a ocorrência enviada pela placa (campo "occurrence" do multipart, em JSON) e a normaliza:
  *   { id_dispositivo, timestamp, severity, total_pessoas, pessoas: [{ numero, caixa, capacete, colete }] }
- * Devolve também `infracoes`: o que deve virar registro em "infracao" (EPI "ausente" marcado como "novo").
+ * Devolve também `infracoes`: o que deve virar registro em "infracao" (EPI "ausente" marcado como "novo"),
+ * já com capacete + colete da mesma pessoa fundidos em um único registro 'no-helmet-no-vest'.
  */
 function parseOccurrence(raw) {
   let data = raw;
@@ -142,6 +148,25 @@ function parseOccurrence(raw) {
     throw new HttpError(400, 'A ocorrência não traz nenhum EPI ausente marcado como novo.');
   }
 
+  // A MESMA pessoa sem capacete E sem colete na mesma captura vira um registro só ("ambos"), não dois; a
+  // confiança do registro combinado é a menor das duas (as duas ausências precisam ser verdadeiras).
+  // Pessoas diferentes (uma sem capacete, outra sem colete) continuam em registros separados.
+  const registros = [];
+  for (const numero of seen) {
+    const dela = infracoes.filter((infracao) => infracao.numero === numero);
+    const capacete = dela.find((infracao) => infracao.tipo === EPI_KEYS.capacete);
+    const colete = dela.find((infracao) => infracao.tipo === EPI_KEYS.colete);
+    if (capacete && colete) {
+      registros.push({
+        tipo: BOTH_TYPE,
+        numero,
+        confianca: Math.min(capacete.confianca, colete.confianca),
+      });
+    } else {
+      registros.push(...dela);
+    }
+  }
+
   const total =
     data.total_pessoas === undefined || data.total_pessoas === null
       ? pessoas.length
@@ -156,7 +181,7 @@ function parseOccurrence(raw) {
     severity,
     total_pessoas: total,
     pessoas,
-    infracoes,
+    infracoes: registros,
   };
 }
 

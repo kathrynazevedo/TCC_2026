@@ -1,6 +1,6 @@
 import { format } from "date-fns";
 import { formatDateTime } from "@/lib/format";
-import { typeLabel, severityConfig, statusConfig, personLabel } from "@/lib/violationLabels";
+import { typeLabel, statusConfig, personLabel, lacksHelmet, lacksVest } from "@/lib/violationLabels";
 
 function download(blob, filename) {
   const url = URL.createObjectURL(blob);
@@ -24,7 +24,9 @@ const csvCell = (value) => {
 };
 
 export function buildCsv(violations) {
-  const header = ["ID", "Data/Hora", "Zona", "Tipo", "Pessoa", "Ocorrência", "Confiança (%)", "Severidade", "Status", "Evidência (URL)"];
+  // A main tirou confiança e severidade da tela e dos relatórios; Pessoa e Captura vêm do envio por cena
+  // ("Captura" = id da cena inteira; várias infrações da mesma foto compartilham o mesmo número).
+  const header = ["ID", "Data/Hora", "Zona", "Tipo", "Pessoa", "Captura", "Status", "Evidência (URL)"];
   const rows = violations.map((v) => [
     v.id,
     formatDateTime(v.detected_at, "dd/MM/yyyy HH:mm:ss"),
@@ -32,8 +34,6 @@ export function buildCsv(violations) {
     typeLabel(v.type, "long"),
     personLabel(v),
     v.occurrence_id ?? "",
-    v.confidence === null || v.confidence === undefined ? "" : Math.round(Number(v.confidence) * 100),
-    (severityConfig[v.severity] || severityConfig.high).label,
     (statusConfig[v.status] || statusConfig.active).label,
     v.imagem_url || "",
   ]);
@@ -63,7 +63,7 @@ export async function exportDdsPdf(violations, responsavel) {
   const count = (predicate) => violations.filter(predicate).length;
   doc.text(
     `Total: ${violations.length}   |   Pendentes: ${count((v) => v.status === "active")}   |   ` +
-      `Sem capacete: ${count((v) => v.type === "no-helmet")}   |   Sem colete: ${count((v) => v.type === "no-vest")}`,
+      `Sem capacete: ${count((v) => lacksHelmet(v.type))}   |   Sem colete: ${count((v) => lacksVest(v.type))}`,
     14,
     43
   );
@@ -72,12 +72,11 @@ export async function exportDdsPdf(violations, responsavel) {
 
   autoTable(doc, {
     startY: 54,
-    head: [["Data / Hora", "Zona de Risco", "Tipo de Infração", "Severidade", "Status"]],
+    head: [["Data / Hora", "Zona de Risco", "Tipo de Infração", "Status"]],
     body: violations.slice(0, 40).map((v) => [
       formatDateTime(v.detected_at, "dd/MM/yyyy HH:mm"),
       v.zone || "Geral",
       typeLabel(v.type, "long"),
-      (severityConfig[v.severity] || severityConfig.high).pdf,
       (statusConfig[v.status] || statusConfig.active).pdf,
     ]),
     theme: "grid",

@@ -7,6 +7,8 @@ const router = express.Router();
 
 router.get('/', violationController.getViolations);
 router.patch('/:id', violationController.updateStatus);
+// Exclusão em lote; exige a senha no corpo da requisição (conferida no controller).
+router.delete('/', violationController.deleteViolations);
 // A autenticação vem antes do multer: requisição sem chave nem chega a ser carregada em memória.
 router.post('/', edgeAuth, upload.single('image'), violationController.registrarInfracao);
 

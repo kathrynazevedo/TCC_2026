@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS dispositivo_borda (
 CREATE TABLE IF NOT EXISTS infracao (
   id_infracao         SERIAL PRIMARY KEY,
   id_dispositivo      INTEGER NOT NULL REFERENCES dispositivo_borda (id_dispositivo),
-  tipo_epi_ausente    VARCHAR(50) NOT NULL,                 -- 'no-helmet' | 'no-vest'
+  tipo_epi_ausente    VARCHAR(50) NOT NULL,                 -- 'no-helmet' | 'no-vest' | 'no-helmet-no-vest'
   score_confianca     NUMERIC(5, 4) NOT NULL,               -- 0 a 1
   timestamp_deteccao  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   imagem_url          TEXT,

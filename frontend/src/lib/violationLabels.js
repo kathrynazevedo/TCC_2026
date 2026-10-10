@@ -3,8 +3,15 @@
 const TYPES = {
   "no-helmet": { short: "Sem Capacete", alert: "Falta de Capacete", long: "Ausência de Capacete" },
   "no-vest": { short: "Sem Colete", alert: "Falta de Colete", long: "Ausência de Colete" },
+  // Um registro só (mesma pessoa/quadro sem capacete E sem colete), não dois.
+  "no-helmet-no-vest": { short: "Sem Capacete e Colete", alert: "Falta de Capacete e Colete", long: "Ausência de Capacete e Colete" },
 };
 const UNKNOWN_TYPE = { short: "Ausência de EPI", alert: "Falta de EPI", long: "Ausência de EPI" };
+
+/** O registro envolve capacete ausente? (inclui o tipo "ambos") */
+export const lacksHelmet = (type) => type === "no-helmet" || type === "no-helmet-no-vest";
+/** O registro envolve colete ausente? (inclui o tipo "ambos") */
+export const lacksVest = (type) => type === "no-vest" || type === "no-helmet-no-vest";
 
 /** kind: "short" | "alert" | "long" */
 export const typeLabel = (type, kind = "short") => (TYPES[type] || UNKNOWN_TYPE)[kind];
@@ -15,34 +22,17 @@ export const personLabel = (v) => {
   return v.people_total ? `Pessoa ${v.person_number} de ${v.people_total}` : `Pessoa ${v.person_number}`;
 };
 
+// "color" usa os tokens do tema (claro/escuro), não cores fixas.
+
 /** Estado de um EPI de uma pessoa na cena, como a placa o enviou. */
 export const epiStateConfig = {
-  ok: { label: "OK", color: "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400" },
-  ausente: { label: "Ausente", color: "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400" },
-  desconhecido: { label: "Não detectado", color: "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400" },
-};
-
-export const severityConfig = {
-  low: { label: "Baixa", pdf: "BAIXA", color: "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300" },
-  medium: { label: "Média", pdf: "MÉDIA", color: "bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400" },
-  high: { label: "Alta", pdf: "ALTA", color: "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400" },
-  critical: { label: "Crítica", pdf: "CRÍTICA", color: "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400" },
+  ok: { label: "OK", color: "border-success/50 bg-success/10 text-success" },
+  ausente: { label: "Ausente", color: "border-destructive/50 bg-destructive/10 text-destructive" },
+  desconhecido: { label: "Não detectado", color: "border-border bg-muted text-muted-foreground" },
 };
 
 export const statusConfig = {
-  active: {
-    label: "Ativa",
-    pdf: "PENDENTE",
-    color: "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 border-red-200 dark:border-red-900/50",
-  },
-  acknowledged: {
-    label: "Reconhecida",
-    pdf: "EM ANÁLISE",
-    color: "bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 border-yellow-200 dark:border-yellow-900/50",
-  },
-  resolved: {
-    label: "Resolvida",
-    pdf: "RESOLVIDO",
-    color: "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 border-green-200 dark:border-green-900/50",
-  },
+  active: { label: "Ativa", pdf: "PENDENTE", color: "border-destructive/50 bg-destructive/10 text-destructive" },
+  acknowledged: { label: "Reconhecida", pdf: "EM ANÁLISE", color: "border-warning/50 bg-warning/10 text-warning" },
+  resolved: { label: "Resolvida", pdf: "RESOLVIDO", color: "border-success/50 bg-success/10 text-success" },
 };

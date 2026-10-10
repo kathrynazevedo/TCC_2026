@@ -1,57 +1,55 @@
 import React, { Suspense, useState, useEffect } from "react";
+import { Outlet, useLocation } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import TopBar from "./TopBar";
-import { Outlet } from "react-router-dom";
 import ErrorBoundary from "@/components/common/ErrorBoundary";
+import { screenFor } from "@/lib/screens";
+
+const THEME_KEY = "safework-theme";
 
 export default function AppLayout() {
-  // Estado para a Sidebar recolhível
-  const [isCollapsed, setIsCollapsed] = useState(false);
-  
-  // Estado para o Dark Mode (Puxa do cache do navegador se existir)
+  // Em telas médias (notebook pequeno) o menu já abre recolhido, para a tabela caber sem rolagem.
+  const [isCollapsed, setIsCollapsed] = useState(() => typeof window !== "undefined" && window.innerWidth < 1280);
+  const { pathname } = useLocation();
+
+  // Escuro por padrão (visual de sala de controle); a escolha da pessoa fica salva no navegador.
   const [isDarkMode, setIsDarkMode] = useState(() => {
     try {
-      return localStorage.getItem("theme") === "dark";
+      const stored = localStorage.getItem(THEME_KEY);
+      return stored ? stored === "dark" : true;
     } catch {
-      return false;
+      return true;
     }
   });
 
-  // Efeito que injeta a classe 'dark' no HTML quando o botão é ativado
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDarkMode);
     try {
-      localStorage.setItem("theme", isDarkMode ? "dark" : "light");
+      localStorage.setItem(THEME_KEY, isDarkMode ? "dark" : "light");
     } catch {
       // armazenamento indisponível (modo privado): o tema só não será lembrado
     }
   }, [isDarkMode]);
 
   return (
-    <div className="flex h-screen bg-slate-50 dark:bg-[#09090b] overflow-hidden transition-colors duration-300">
-      
-      {/* Sidebar Desktop com tamanho dinâmico (w-20 ou w-72) */}
-      <aside 
-        className={`hidden lg:flex lg:flex-col lg:fixed lg:inset-y-0 border-r border-slate-200 dark:border-slate-800 bg-[#0f172a] transition-all duration-300 z-50 ${isCollapsed ? 'w-20' : 'w-72'}`}
+    // data-screen define a cor de sinal (--signal) que menu, topo e página compartilham.
+    <div data-screen={screenFor(pathname).key} className="flex h-screen overflow-hidden bg-background text-foreground">
+      <aside
+        className={`z-50 hidden border-r border-sidebar-border transition-all duration-300 lg:fixed lg:inset-y-0 lg:flex lg:flex-col ${isCollapsed ? "w-20" : "w-72"}`}
       >
         <Sidebar isCollapsed={isCollapsed} setIsCollapsed={setIsCollapsed} />
       </aside>
 
-      {/* Área Principal (Ajusta o padding lateral dependendo da Sidebar) */}
-      <div className={`flex flex-col flex-1 w-full overflow-hidden transition-all duration-300 ${isCollapsed ? 'lg:pl-20' : 'lg:pl-72'}`}>
-        
-        <TopBar 
-          isDarkMode={isDarkMode} 
-          setIsDarkMode={setIsDarkMode} 
-        />
-        
-        <main className="flex-1 relative overflow-y-auto focus:outline-none dark:text-slate-200">
-          <div className="py-6 px-4 sm:px-6 lg:px-8 max-w-[1600px] mx-auto">
+      <div className={`flex w-full flex-1 flex-col overflow-hidden transition-all duration-300 ${isCollapsed ? "lg:pl-20" : "lg:pl-72"}`}>
+        <TopBar isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} />
+
+        <main className="grid-bg relative flex-1 overflow-y-auto focus:outline-none">
+          <div className="mx-auto max-w-[1600px] px-4 py-8 sm:px-6 lg:px-8">
             <ErrorBoundary>
               <Suspense
                 fallback={
                   <div className="flex justify-center py-24">
-                    <div className="w-8 h-8 border-4 border-slate-200 border-t-blue-600 rounded-full animate-spin" />
+                    <div className="h-8 w-8 animate-spin border-4 border-border border-t-signal" />
                   </div>
                 }
               >

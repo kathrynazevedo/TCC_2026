@@ -7,6 +7,7 @@ const path = require('node:path');
 
 process.env.NODE_ENV = 'test';
 process.env.EDGE_API_KEY = 'chave-de-teste';
+process.env.DELETE_PASSWORD = 'senha-de-teste';
 process.env.EDGE_OFFLINE_AFTER_SECONDS = '90';
 
 const { newDb } = require('pg-mem');
@@ -17,7 +18,11 @@ const pool = new Pool();
 
 const uploads = [];
 const deletions = [];
+const removedUrls = [];
 const fakeStorage = {
+  deleteEvidencesByUrl: async (urls) => {
+    removedUrls.push(...urls);
+  },
   uploadEvidence: async () => {
     uploads.push(Date.now());
     return { url: `https://img.test/evidencia-${uploads.length}.jpg`, publicId: `evidencia-${uploads.length}` };
@@ -91,6 +96,7 @@ beforeEach(async () => {
   await pool.query("INSERT INTO trabalhador (nome, cargo, status, zona) VALUES ('Zé', 'Pedreiro', 'Ativo', 'Zona Norte')");
   uploads.length = 0;
   deletions.length = 0;
+  removedUrls.length = 0;
 });
 
 // ---------- saúde e roteamento ----------
@@ -129,6 +135,22 @@ test('POST /violations válido grava a infração com o código canônico do EPI
   assert.equal(rows[0].tipo_epi_ausente, 'no-helmet');
   assert.equal(rows[0].status_resolucao, 'active');
   assert.equal(rows[0].imagem_url, 'https://img.test/evidencia-1.jpg');
+});
+
+test('POST /violations aceita "sem capacete e sem colete" como UM registro só', async () => {
+  const { status, json } = await api('POST', '/api/violations', {
+    headers: AUTH,
+    form: violationForm({ tipo_epi_ausente: 'no-helmet-no-vest' }),
+  });
+  assert.equal(status, 201);
+  assert.equal(json.data.tipo_epi_ausente, 'no-helmet-no-vest');
+
+  const { rows } = await pool.query('SELECT tipo_epi_ausente FROM infracao');
+  assert.deepEqual(rows.map((r) => r.tipo_epi_ausente), ['no-helmet-no-vest']);
+
+  // a listagem devolve o código canônico, sem ser confundido com um dos dois tipos simples
+  const lista = await api('GET', '/api/violations');
+  assert.equal(lista.json.data[0].type, 'no-helmet-no-vest');
 });
 
 test('POST /violations rejeita dados inválidos sem tocar no Cloudinary', async () => {
@@ -210,12 +232,12 @@ test('POST /occurrences sem chave de API é recusado e nada é enviado ao Cloudi
   assert.equal(uploads.length, 0);
 });
 
-test('POST /occurrences grava a cena inteira: 1 foto, 1 ocorrência e uma infração por EPI novo', async () => {
+test('POST /occurrences grava a cena inteira: 1 foto, 1 ocorrência e 1 registro por pessoa (capacete+colete = "ambos")', async () => {
   const { status, json } = await api('POST', '/api/occurrences', { headers: AUTH, form: occurrenceForm(cena()) });
   assert.equal(status, 201);
   assert.equal(uploads.length, 1, 'a foto sobe uma única vez, não uma por infração');
   assert.equal(json.data.total_pessoas, 2);
-  assert.equal(json.data.infracoes.length, 3);
+  assert.equal(json.data.infracoes.length, 2);
 
   const oc = await pool.query('SELECT * FROM ocorrencia');
   assert.equal(oc.rows.length, 1);
@@ -230,12 +252,43 @@ test('POST /occurrences grava a cena inteira: 1 foto, 1 ocorrência e uma infra�
     inf.rows.map((r) => [r.numero_pessoa, r.tipo_epi_ausente, Number(r.score_confianca)]),
     [
       [1, 'no-vest', 0.83],
-      [2, 'no-helmet', 0.87],
-      [2, 'no-vest', 0.78],
+      // a pessoa 2 está sem capacete (0.87) E sem colete (0.78): um registro só, com a menor confiança
+      [2, 'no-helmet-no-vest', 0.78],
     ]
   );
   assert.ok(inf.rows.every((r) => r.id_ocorrencia === oc.rows[0].id_ocorrencia));
   assert.ok(inf.rows.every((r) => r.imagem_url === oc.rows[0].imagem_url && r.status_resolucao === 'active'));
+});
+
+test('POST /occurrences: pessoas DIFERENTES (uma sem capacete, outra sem colete) não viram "ambos"', async () => {
+  const separadas = cena({
+    pessoas: [
+      { numero: 1, capacete: { estado: 'ausente', confianca: 0.9, novo: true }, colete: { estado: 'ok', confianca: 0.8, novo: false } },
+      { numero: 2, capacete: { estado: 'ok', confianca: 0.9, novo: false }, colete: { estado: 'ausente', confianca: 0.7, novo: true } },
+    ],
+  });
+  const { status } = await api('POST', '/api/occurrences', { headers: AUTH, form: occurrenceForm(separadas) });
+  assert.equal(status, 201);
+  const { rows } = await pool.query('SELECT numero_pessoa, tipo_epi_ausente FROM infracao ORDER BY numero_pessoa');
+  assert.deepEqual(
+    rows.map((r) => [r.numero_pessoa, r.tipo_epi_ausente]),
+    [
+      [1, 'no-helmet'],
+      [2, 'no-vest'],
+    ]
+  );
+});
+
+test('POST /occurrences: se o colete já tinha sido alertado, só o capacete novo vira registro', async () => {
+  const soCapacete = cena({
+    pessoas: [
+      { numero: 1, capacete: { estado: 'ausente', confianca: 0.88, novo: true }, colete: { estado: 'ausente', confianca: 0.77, novo: false } },
+    ],
+    total_pessoas: 1,
+  });
+  await api('POST', '/api/occurrences', { headers: AUTH, form: occurrenceForm(soCapacete) });
+  const { rows } = await pool.query('SELECT tipo_epi_ausente FROM infracao');
+  assert.deepEqual(rows.map((r) => r.tipo_epi_ausente), ['no-helmet']);
 });
 
 test('GET /violations devolve a pessoa e a cena de cada infração; registros antigos vêm sem esses campos', async () => {
@@ -243,12 +296,13 @@ test('GET /violations devolve a pessoa e a cena de cada infração; registros an
   await api('POST', '/api/occurrences', { headers: AUTH, form: occurrenceForm(cena()) });
 
   const { json } = await api('GET', '/api/violations');
-  assert.equal(json.data.length, 4);
+  assert.equal(json.data.length, 3);
   const doNovo = json.data.filter((v) => v.occurrence_id !== null);
-  assert.equal(doNovo.length, 3);
-  assert.deepEqual(doNovo.map((v) => v.person_number).sort(), [1, 2, 2]);
+  assert.equal(doNovo.length, 2);
+  assert.deepEqual(doNovo.map((v) => v.person_number).sort(), [1, 2]);
+  assert.deepEqual(doNovo.map((v) => v.type).sort(), ['no-helmet-no-vest', 'no-vest']);
   assert.ok(doNovo.every((v) => v.people_total === 2 && v.people.length === 2));
-  assert.equal(new Set(doNovo.map((v) => v.occurrence_id)).size, 1, 'as três infrações pertencem à mesma ocorrência');
+  assert.equal(new Set(doNovo.map((v) => v.occurrence_id)).size, 1, 'as duas infrações pertencem à mesma ocorrência');
 
   const legado = json.data.find((v) => v.occurrence_id === null);
   assert.equal(legado.person_number, null);
@@ -260,7 +314,7 @@ test('PATCH de uma infração da ocorrência não altera as outras', async () =>
   const { rows } = await pool.query('SELECT id_infracao FROM infracao ORDER BY id_infracao');
   await api('PATCH', `/api/violations/${rows[0].id_infracao}`, { body: { status: 'resolved' } });
   const { json } = await api('GET', '/api/violations');
-  assert.deepEqual(json.data.map((v) => v.status).sort(), ['active', 'active', 'resolved']);
+  assert.deepEqual(json.data.map((v) => v.status).sort(), ['active', 'resolved']);
 });
 
 test('POST /occurrences rejeita dados inválidos sem tocar no Cloudinary nem no banco', async () => {
@@ -377,6 +431,55 @@ test('PATCH /violations/:id altera o status e valida entrada', async () => {
   assert.equal((await api('PATCH', `/api/violations/${id}`, { body: {} })).status, 400);
   assert.equal((await api('PATCH', '/api/violations/abc', { body: { status: 'resolved' } })).status, 400);
   assert.equal((await api('PATCH', '/api/violations/9999', { body: { status: 'resolved' } })).status, 404);
+});
+
+test('DELETE /violations exclui só as selecionadas, com a senha, e remove as imagens', async () => {
+  await insertViolation('no-helmet', 'active', 3);
+  await insertViolation('no-vest', 'resolved', 2);
+  await insertViolation('no-helmet', 'active', 1);
+  const { rows } = await pool.query('SELECT id_infracao FROM infracao ORDER BY id_infracao');
+  const [a, b, c] = rows.map((r) => r.id_infracao);
+
+  // ids repetidos e em texto são aceitos; o duplicado conta uma vez só.
+  const { status, json } = await api('DELETE', '/api/violations', { body: { ids: [a, String(c), a], password: 'senha-de-teste' } });
+  assert.equal(status, 200);
+  assert.equal(json.deleted, 2);
+  assert.deepEqual([...json.ids].sort(), [a, c].sort());
+
+  const restantes = await pool.query('SELECT id_infracao FROM infracao');
+  assert.deepEqual(restantes.rows.map((r) => r.id_infracao), [b]);
+  assert.equal(removedUrls.length, 2);
+
+  // a tela de violações deixa de listar as excluídas
+  assert.equal((await api('GET', '/api/violations')).json.data.length, 1);
+});
+
+test('DELETE /violations com senha errada ou ausente é recusado e nada é apagado', async () => {
+  await insertViolation('no-helmet', 'active');
+  const { rows } = await pool.query('SELECT id_infracao FROM infracao');
+  const ids = rows.map((r) => r.id_infracao);
+
+  const errada = await api('DELETE', '/api/violations', { body: { ids, password: '12345' } });
+  assert.equal(errada.status, 403);
+  assert.equal(errada.json.error, 'Senha incorreta.');
+  assert.equal((await api('DELETE', '/api/violations', { body: { ids } })).status, 403);
+  assert.equal((await api('DELETE', '/api/violations', { body: { ids, password: 12345 } })).status, 403);
+
+  assert.equal((await pool.query('SELECT 1 FROM infracao')).rows.length, 1);
+  assert.equal(removedUrls.length, 0);
+});
+
+test('DELETE /violations valida a lista de ids', async () => {
+  const password = 'senha-de-teste';
+  assert.equal((await api('DELETE', '/api/violations', { body: { password } })).status, 400);
+  assert.equal((await api('DELETE', '/api/violations', { body: { ids: [], password } })).status, 400);
+  assert.equal((await api('DELETE', '/api/violations', { body: { ids: ['abc'], password } })).status, 400);
+  assert.equal((await api('DELETE', '/api/violations', { body: { ids: [-1], password } })).status, 400);
+
+  // id que não existe não é erro: nada é apagado e o total volta zerado
+  const inexistente = await api('DELETE', '/api/violations', { body: { ids: [9999], password } });
+  assert.equal(inexistente.status, 200);
+  assert.equal(inexistente.json.deleted, 0);
 });
 
 test('JSON malformado devolve 400 (não 500)', async () => {

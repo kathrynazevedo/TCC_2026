@@ -31,6 +31,14 @@ export const updateViolationStatus = (id, status) =>
     body: JSON.stringify({ status }),
   });
 
+// Exclui do banco (e do Cloudinary). A senha é conferida pela API; senha errada => erro 403.
+export const deleteViolations = (ids, password) =>
+  request('/violations', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids, password }),
+  });
+
 export const getMetrics = () => request('/metrics');
 
 export const getAreas = async () => (await request('/areas')).data;

@@ -13,6 +13,7 @@ export function groupByOccurrence(violations) {
       groups.set(key, {
         key,
         occurrence_id: v.occurrence_id ?? null,
+        id_dispositivo: v.id_dispositivo,
         imagem_url: v.imagem_url,
         detected_at: v.detected_at,
         zone: v.zone,
