@@ -20,6 +20,10 @@ module.exports = {
   // Chave que a Raspberry Pi envia no header x-api-key (POST /violations e POST /status/heartbeat).
   edgeApiKey: process.env.EDGE_API_KEY || '',
 
+  // Senha pedida pelo dashboard para excluir infrações. Padrão simples de projeto acadêmico;
+  // em produção defina DELETE_PASSWORD no .env.
+  deletePassword: process.env.DELETE_PASSWORD || '12345',
+
   // Lista separada por vírgula. Vazio = qualquer origem (apenas em desenvolvimento).
   corsOrigins: (process.env.CORS_ORIGIN || '')
     .split(',')

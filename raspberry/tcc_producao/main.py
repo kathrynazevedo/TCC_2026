@@ -9,7 +9,7 @@ import cv2
 
 import cliente_api
 import config
-from deteccao import Debounce, resumir_infracoes, classificar
+from deteccao import Debounce, combinar_infracoes, resumir_infracoes, classificar
 
 # ==========================================
 # SIRENE (GPIO) — simulada quando não está numa Raspberry
@@ -154,7 +154,7 @@ def main():
                 deteccoes.append((nome, confianca))
                 desenhar(frame, nome, confianca, map(int, box.xyxy[0]))
 
-            infracoes = resumir_infracoes(deteccoes, config.CONFIANCA_MINIMA)
+            infracoes = combinar_infracoes(resumir_infracoes(deteccoes, config.CONFIANCA_MINIMA))
             novos = [(tipo, conf) for tipo, conf in infracoes.items() if debounce.permitir(tipo, time.monotonic())]
 
             if novos:

@@ -46,7 +46,7 @@ Sistema de câmera inteligente baseado em Visão Computacional que monitora cant
 
 ```text
 .
-├── package.json              # scripts da raiz (install:all, dev:api, dev:web, build, start, test)
+├── package.json              # scripts da raiz (install:all, dev, dev:api, dev:web, build, start, test)
 ├── backend_api/
 │   ├── server.js             # inicializa o servidor (porta, encerramento limpo)
 │   ├── src/
@@ -91,14 +91,18 @@ Execute no banco, nesta ordem: `backend_api/db/schema.sql` e, para ter dados de 
 ```bash
 npm run install:all
 cp backend_api/.env.example backend_api/.env   # preencha DATABASE_URL, CLOUDINARY_* e EDGE_API_KEY
-npm run dev:api                                # http://localhost:3000
 ```
 
-### 3. Dashboard (desenvolvimento)
+No Windows (CMD), use `copy backend_api\.env.example backend_api\.env`.
+
+### 3. Subir tudo (desenvolvimento)
 
 ```bash
-npm run dev:web                                # http://localhost:5173
+npm run dev     # API em http://localhost:3000 + dashboard em http://localhost:5173
 ```
+
+Um único terminal roda os dois servidores (logs prefixados com `[api]` e `[web]`); `Ctrl+C` encerra ambos.
+Para subir só um deles: `npm run dev:api` ou `npm run dev:web`.
 
 O Vite repassa `/api` para `localhost:3000`, então não há configuração extra nem problema de CORS.
 
@@ -133,6 +137,7 @@ Se a API estiver fora do ar, os alertas ficam em `pendentes/` e são reenviados 
 | `POST` | `/api/violations` | Raspberry 🔑 | Registra infração (`multipart`: `image`, `id_dispositivo`, `tipo_epi_ausente`, `confidence`, `timestamp`, `severity`) |
 | `GET` | `/api/violations?limit=&status=` | dashboard | Lista infrações (mais recentes primeiro, máx. 1000) |
 | `PATCH` | `/api/violations/:id` | dashboard | Altera status: `active` → `acknowledged` → `resolved` |
+| `DELETE` | `/api/violations` | dashboard 🔒 | Exclui em lote do banco e do Cloudinary: `{ "ids": [1, 2], "password": "..." }`. Senha em `DELETE_PASSWORD` (padrão `12345`); errada → `403` |
 | `GET` | `/api/metrics` | dashboard | Totais, não conformidades, taxa de segurança, câmeras |
 | `GET` | `/api/areas` | dashboard | Zonas com seus dispositivos e se estão online |
 | `GET` | `/api/workers` | dashboard | Equipe cadastrada |
@@ -141,7 +146,7 @@ Se a API estiver fora do ar, os alertas ficam em `pendentes/` e são reenviados 
 
 🔑 exige o header `x-api-key` com o valor de `EDGE_API_KEY`.
 
-Códigos de tipo de EPI: `no-helmet` (sem capacete) e `no-vest` (sem colete).
+Códigos de tipo de EPI: `no-helmet` (sem capacete), `no-vest` (sem colete) e `no-helmet-no-vest` (sem capacete **e** sem colete). Quando a câmera vê as duas faltas no mesmo quadro, a placa envia **um único** registro `no-helmet-no-vest`, em vez de dois.
 
 ## ⚙️ Variáveis de ambiente
 

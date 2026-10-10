@@ -38,6 +38,32 @@ class TestDeteccao(unittest.TestCase):
         self.assertTrue(d.permitir("no-vest", 105.0))  # tipos independentes
         self.assertTrue(d.permitir("no-helmet", 110.0))
 
+    def test_capacete_e_colete_no_mesmo_quadro_viram_um_alerta_so(self):
+        resumo = deteccao.resumir_infracoes([("sem_capacete", 0.91), ("sem_colete", 0.78)], 0.70)
+        self.assertEqual(deteccao.combinar_infracoes(resumo), {"no-helmet-no-vest": 0.78})  # menor confiança
+
+    def test_infracao_isolada_nao_e_combinada(self):
+        self.assertEqual(deteccao.combinar_infracoes({"no-helmet": 0.9}), {"no-helmet": 0.9})
+        self.assertEqual(deteccao.combinar_infracoes({"no-vest": 0.8}), {"no-vest": 0.8})
+        self.assertEqual(deteccao.combinar_infracoes({}), {})
+
+    def test_combinar_nao_altera_o_resumo_original(self):
+        resumo = {"no-helmet": 0.9, "no-vest": 0.8}
+        deteccao.combinar_infracoes(resumo)
+        self.assertEqual(resumo, {"no-helmet": 0.9, "no-vest": 0.8})
+
+    def test_alerta_ambos_cobre_oscilacao_para_so_capacete_ou_so_colete(self):
+        d = deteccao.Debounce(10)
+        self.assertTrue(d.permitir("no-helmet-no-vest", 100.0))
+        self.assertFalse(d.permitir("no-helmet", 103.0))  # modelo oscilou: não repete o aviso
+        self.assertFalse(d.permitir("no-vest", 104.0))
+        self.assertTrue(d.permitir("no-helmet", 111.0))   # passada a janela, volta a avisar
+
+    def test_alerta_isolado_nao_bloqueia_o_ambos(self):
+        d = deteccao.Debounce(10)
+        self.assertTrue(d.permitir("no-helmet", 100.0))
+        self.assertTrue(d.permitir("no-helmet-no-vest", 101.0))  # situação piorou: avisa
+
     def test_debounce_libera_o_primeiro_alerta_mesmo_com_relogio_perto_de_zero(self):
         self.assertTrue(deteccao.Debounce(10).permitir("no-vest", 0.5))
 

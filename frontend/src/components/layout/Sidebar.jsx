@@ -1,94 +1,98 @@
 import React from "react";
 import { Link, useLocation } from "react-router-dom";
-import { LayoutDashboard, AlertCircle, Map, Users, Settings, ShieldCheck, FileText, ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, HardHat } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/AuthContext";
 import { initials, shortName } from "@/lib/format";
-
-const menuItems = [
-  { icon: LayoutDashboard, label: "Dashboard", path: "/" },
-  { icon: AlertCircle, label: "Violações", path: "/violations" },
-  { icon: Map, label: "Zonas", path: "/zones" },
-  { icon: Users, label: "Equipe", path: "/workers" },
-  { icon: FileText, label: "Relatórios", path: "/docs" },
-  { icon: Settings, label: "Sistema", path: "/system" },
-];
+import { SCREENS } from "@/lib/screens";
 
 export default function Sidebar({ isCollapsed, setIsCollapsed }) {
   const location = useLocation();
   const { user } = useAuth();
 
   return (
-    <div className="flex flex-col h-full bg-[#0f172a] text-slate-300 shadow-2xl relative">
-      
-      {/* Botão Flutuante de Recolher/Expandir (Apenas no Desktop) */}
+    <div className="relative flex h-full flex-col bg-sidebar text-sidebar-foreground">
+      {/* Recolher/expandir (somente desktop) */}
       {setIsCollapsed && (
         <button
+          type="button"
           onClick={() => setIsCollapsed(!isCollapsed)}
-          className="absolute -right-3 top-8 bg-blue-600 rounded-full p-1 text-white shadow-md hover:bg-blue-700 transition-colors z-50 hidden lg:flex items-center justify-center border-2 border-slate-900"
+          aria-label={isCollapsed ? "Expandir menu" : "Recolher menu"}
+          className="absolute -right-3 top-[22px] z-50 hidden h-6 w-6 items-center justify-center border border-sidebar-border bg-signal text-signal-foreground transition-transform hover:scale-110 lg:flex"
         >
           {isCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
         </button>
       )}
 
-      {/* Logo Area */}
-      <div className={cn("flex items-center h-20 border-b border-slate-800/50 bg-slate-900/50 transition-all duration-300 overflow-hidden", isCollapsed ? "justify-center px-0" : "gap-3 px-6")}>
-        <div className="bg-blue-600/20 p-2 rounded-xl shrink-0">
-          <ShieldCheck className="w-7 h-7 text-blue-500" />
+      {/* Marca */}
+      <div className={cn("flex h-16 shrink-0 items-center overflow-hidden border-b border-sidebar-border", isCollapsed ? "justify-center" : "gap-3 px-5")}>
+        <div className="chamfer-sm flex h-10 w-10 shrink-0 items-center justify-center bg-primary text-primary-foreground">
+          <HardHat className="h-6 w-6" strokeWidth={2.25} />
         </div>
-        {!isCollapsed && <span className="text-xl font-bold tracking-wide text-white whitespace-nowrap animate-in fade-in duration-300">SafeWork</span>}
+        {!isCollapsed && (
+          <div className="min-w-0 whitespace-nowrap">
+            <span className="display block text-[26px] text-white">SafeWork</span>
+            <span className="mt-0.5 block font-mono text-[9px] uppercase tracking-[0.28em] text-sidebar-foreground/50">Central de segurança</span>
+          </div>
+        )}
       </div>
+      <div className="hazard h-1.5 shrink-0" aria-hidden />
 
-      {/* Navigation */}
-      <nav className="flex-1 px-3 py-6 space-y-2 overflow-y-auto overflow-x-hidden custom-scrollbar">
-        {menuItems.map((item) => {
+      {/* Navegação */}
+      <nav className="flex-1 space-y-1 overflow-y-auto overflow-x-hidden py-5">
+        {!isCollapsed && (
+          <p className="px-5 pb-2 font-mono text-[10px] uppercase tracking-[0.25em] text-sidebar-foreground/40">// módulos</p>
+        )}
+        {SCREENS.map((item) => {
           const isActive = location.pathname === item.path;
           return (
             <Link
               key={item.path}
               to={item.path}
               title={isCollapsed ? item.label : undefined}
+              aria-current={isActive ? "page" : undefined}
               className={cn(
-                "flex items-center rounded-xl text-sm font-medium transition-all duration-300 group relative",
-                isCollapsed ? "justify-center py-3 px-0 mx-1" : "gap-3 px-4 py-3",
-                isActive 
-                  ? "bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-md shadow-blue-900/20" 
-                  : "text-slate-400 hover:bg-slate-800/80 hover:text-slate-100"
+                "group relative flex items-center border-l-[3px] text-sm font-medium transition-colors",
+                isCollapsed ? "justify-center px-0 py-3.5" : "gap-3 px-5 py-3",
+                isActive
+                  ? "border-signal bg-signal/10 text-white"
+                  : "border-transparent text-sidebar-foreground/65 hover:bg-white/5 hover:text-white"
               )}
             >
-              <item.icon 
-                className={cn(
-                  "shrink-0 transition-transform duration-300", 
-                  isCollapsed ? "w-6 h-6" : "w-5 h-5",
-                  isActive ? "text-white" : "text-slate-500 group-hover:text-blue-400 group-hover:scale-110"
-                )} 
+              {!isCollapsed && (
+                <span className={cn("font-mono text-[11px] tabular-nums", isActive ? "text-signal" : "text-sidebar-foreground/35")}>
+                  {item.code}
+                </span>
+              )}
+              <item.icon
+                className={cn("shrink-0", isCollapsed ? "h-6 w-6" : "h-[18px] w-[18px]", isActive ? "text-signal" : "text-sidebar-foreground/50 group-hover:text-white")}
+                strokeWidth={2}
               />
-              {!isCollapsed && <span className="whitespace-nowrap animate-in fade-in duration-300">{item.label}</span>}
+              {!isCollapsed && <span className="whitespace-nowrap uppercase tracking-wide">{item.label}</span>}
             </Link>
           );
         })}
       </nav>
 
-      {/* Footer Info */}
-      <div className={cn("border-t border-slate-800/50 bg-slate-900/20 transition-all duration-300 overflow-hidden", isCollapsed ? "p-3" : "p-6")}>
-        <div className={cn("flex items-center", isCollapsed ? "justify-center" : "gap-3 mb-4")}>
-          <div className="h-9 w-9 shrink-0 rounded-full bg-slate-700 flex items-center justify-center text-white text-xs font-bold border border-slate-600">
+      {/* Operador */}
+      <div className={cn("shrink-0 overflow-hidden border-t border-sidebar-border", isCollapsed ? "p-3" : "p-5")}>
+        <div className={cn("flex items-center", isCollapsed ? "justify-center" : "gap-3")}>
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center border border-sidebar-border bg-sidebar-accent font-mono text-xs font-bold text-white">
             {initials(user.name)}
           </div>
           {!isCollapsed && (
-            <div className="animate-in fade-in duration-300 whitespace-nowrap">
-              <p className="text-sm font-bold text-white">{shortName(user.name)}</p>
-              <p className="text-[10px] text-green-400 font-medium flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
-                Admin Online
+            <div className="min-w-0 whitespace-nowrap">
+              <p className="truncate text-sm font-semibold text-white">{shortName(user.name)}</p>
+              <p className="mt-0.5 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-success">
+                <span className="led led-pulse !h-1.5 !w-1.5" /> Admin online
               </p>
             </div>
           )}
         </div>
         {!isCollapsed && (
-          <div className="text-[9px] text-slate-500 uppercase tracking-widest font-semibold text-center whitespace-nowrap animate-in fade-in duration-300">
-            TCC CS 2026
-          </div>
+          <p className="mt-4 border-t border-sidebar-border pt-3 font-mono text-[9px] uppercase tracking-[0.25em] text-sidebar-foreground/35">
+            TCC CS · 2026
+          </p>
         )}
       </div>
     </div>

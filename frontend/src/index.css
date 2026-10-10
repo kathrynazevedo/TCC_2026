@@ -1,99 +1,105 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * SafeWork — identidade "sala de controle de canteiro".
+ * Escuro por padrão (imersivo); o claro é uma "planta técnica" em tons de concreto.
+ * Cada tela define uma cor de sinal (--signal) via data-screen: o menu, o topo e as listras mudam junto.
+ */
 @layer base {
   :root {
     --font-sans: 'Inter', sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
+    --font-display: 'Barlow Condensed', 'Arial Narrow', sans-serif;
 
-    --background: 220 20% 97%;
-    --foreground: 220 20% 10%;
+    /* tema claro: planta técnica */
+    --background: 40 14% 92%;
+    --foreground: 222 22% 9%;
     --card: 0 0% 100%;
-    --card-foreground: 220 20% 10%;
+    --card-foreground: 222 22% 9%;
+    --surface: 40 12% 95%;
     --popover: 0 0% 100%;
-    --popover-foreground: 220 20% 10%;
-    --primary: 220 70% 50%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 220 15% 92%;
-    --secondary-foreground: 220 20% 25%;
-    --muted: 220 15% 94%;
-    --muted-foreground: 220 10% 46%;
-    --accent: 45 93% 47%;
-    --accent-foreground: 220 20% 10%;
-    --destructive: 0 72% 51%;
+    --popover-foreground: 222 22% 9%;
+    --primary: 46 100% 50%;
+    --primary-foreground: 222 22% 9%;
+    --secondary: 40 10% 89%;
+    --secondary-foreground: 222 22% 15%;
+    --muted: 40 10% 89%;
+    --muted-foreground: 222 8% 36%;
+    --accent: 40 10% 87%;
+    --accent-foreground: 222 22% 9%;
+    --destructive: 358 82% 46%;
     --destructive-foreground: 0 0% 100%;
-    --border: 220 15% 90%;
-    --input: 220 15% 90%;
-    --ring: 220 70% 50%;
-    --chart-1: 220 70% 50%;
-    --chart-2: 160 60% 45%;
-    --chart-3: 45 93% 47%;
-    --chart-4: 0 72% 51%;
-    --chart-5: 280 65% 60%;
-    --radius: 0.75rem;
-
-    --success: 152 60% 42%;
+    --success: 145 63% 31%;
     --success-foreground: 0 0% 100%;
-    --warning: 45 93% 47%;
-    --warning-foreground: 220 20% 10%;
-    --danger: 0 72% 51%;
-    --danger-foreground: 0 0% 100%;
+    --warning: 25 95% 40%;
+    --warning-foreground: 0 0% 100%;
+    --info: 196 100% 30%;
+    --info-foreground: 0 0% 100%;
+    --border: 40 6% 76%;
+    --input: 40 6% 72%;
+    --ring: 46 100% 42%;
+    --radius: 0.1875rem;
 
-    --sidebar-background: 220 25% 12%;
-    --sidebar-foreground: 220 10% 85%;
-    --sidebar-primary: 220 70% 50%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 220 20% 18%;
-    --sidebar-accent-foreground: 220 10% 85%;
-    --sidebar-border: 220 20% 20%;
-    --sidebar-ring: 220 70% 50%;
+    --sidebar-background: 222 20% 5%;
+    --sidebar-foreground: 40 12% 88%;
+    --sidebar-primary: 46 100% 50%;
+    --sidebar-primary-foreground: 222 22% 9%;
+    --sidebar-accent: 222 14% 12%;
+    --sidebar-accent-foreground: 40 12% 88%;
+    --sidebar-border: 222 12% 15%;
+    --sidebar-ring: 46 100% 50%;
+
+    /* cor de sinal padrão (telas sem data-screen, ex.: menu móvel) */
+    --signal: 48 100% 50%;
+    --signal-ink: 38 100% 30%;
+    --signal-fg: 222 22% 9%;
   }
 
   .dark {
-    --background: 220 25% 8%;
-    --foreground: 220 10% 93%;
-    --card: 220 25% 11%;
-    --card-foreground: 220 10% 93%;
-    --popover: 220 25% 11%;
-    --popover-foreground: 220 10% 93%;
-    --primary: 220 70% 55%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 220 20% 16%;
-    --secondary-foreground: 220 10% 80%;
-    --muted: 220 20% 14%;
-    --muted-foreground: 220 10% 55%;
-    --accent: 45 93% 52%;
-    --accent-foreground: 220 20% 10%;
-    --destructive: 0 72% 55%;
+    --background: 222 18% 6%;
+    --foreground: 40 14% 93%;
+    --card: 222 16% 9%;
+    --card-foreground: 40 14% 93%;
+    --surface: 222 15% 12%;
+    --popover: 222 16% 10%;
+    --popover-foreground: 40 14% 93%;
+    --primary: 48 100% 51%;
+    --primary-foreground: 222 18% 6%;
+    --secondary: 222 13% 15%;
+    --secondary-foreground: 40 14% 90%;
+    --muted: 222 13% 14%;
+    --muted-foreground: 220 9% 62%;
+    --accent: 222 13% 18%;
+    --accent-foreground: 40 14% 93%;
+    --destructive: 356 92% 58%;
     --destructive-foreground: 0 0% 100%;
-    --border: 220 20% 18%;
-    --input: 220 20% 18%;
-    --ring: 220 70% 55%;
-    --chart-1: 220 70% 55%;
-    --chart-2: 160 60% 50%;
-    --chart-3: 45 93% 52%;
-    --chart-4: 0 72% 55%;
-    --chart-5: 280 65% 65%;
+    --success: 145 72% 46%;
+    --success-foreground: 222 18% 6%;
+    --warning: 31 100% 56%;
+    --warning-foreground: 222 18% 6%;
+    --info: 190 95% 52%;
+    --info-foreground: 222 18% 6%;
+    --border: 222 11% 20%;
+    --input: 222 11% 24%;
+    --ring: 48 100% 51%;
 
-    --success: 152 60% 48%;
-    --success-foreground: 0 0% 100%;
-    --warning: 45 93% 52%;
-    --warning-foreground: 220 20% 10%;
-    --danger: 0 72% 55%;
-    --danger-foreground: 0 0% 100%;
-
-    --sidebar-background: 220 25% 6%;
-    --sidebar-foreground: 220 10% 85%;
-    --sidebar-primary: 220 70% 55%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 220 20% 12%;
-    --sidebar-accent-foreground: 220 10% 85%;
-    --sidebar-border: 220 20% 14%;
-    --sidebar-ring: 220 70% 55%;
+    --sidebar-background: 222 22% 4%;
   }
+
+  /* Uma cor por tela. "ink" é a versão legível como texto no tema claro. */
+  [data-screen="dashboard"] { --signal: 48 100% 50%;  --signal-ink: 38 100% 30%;  --signal-fg: 222 22% 9%; }
+  [data-screen="violations"] { --signal: 4 92% 55%;   --signal-ink: 4 80% 42%;    --signal-fg: 0 0% 100%; }
+  [data-screen="zones"] { --signal: 190 95% 48%;      --signal-ink: 196 100% 28%; --signal-fg: 222 22% 9%; }
+  [data-screen="workers"] { --signal: 145 72% 46%;    --signal-ink: 145 70% 27%;  --signal-fg: 222 22% 9%; }
+  [data-screen="docs"] { --signal: 27 100% 54%;       --signal-ink: 24 92% 36%;   --signal-fg: 222 22% 9%; }
+  [data-screen="system"] { --signal: 262 90% 68%;     --signal-ink: 262 62% 45%;  --signal-fg: 222 22% 9%; }
+  .dark [data-screen] { --signal-ink: var(--signal); }
+  /* O anel de foco (campos, botões) acompanha a cor da tela. */
+  [data-screen] { --ring: var(--signal); }
 }
 
 @layer base {
@@ -101,7 +107,7 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground font-sans;
+    @apply bg-background text-foreground font-sans antialiased;
   }
 }
 
@@ -112,22 +118,84 @@
   .font-sans {
     font-family: var(--font-sans);
   }
+  .font-display {
+    font-family: var(--font-display);
+  }
+}
+
+@layer components {
+  /* Títulos "de placa de obra": condensado, caixa alta. */
+  .display {
+    font-family: var(--font-display);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  /* Listra de alerta (amarelo/preto da sinalização de obra) na cor de sinal da tela. */
+  .hazard {
+    background-image: repeating-linear-gradient(
+      -45deg,
+      hsl(var(--signal)) 0 9px,
+      hsl(222 22% 6%) 9px 18px
+    );
+  }
+
+  /* Cantos cortados, como placas e etiquetas industriais. Use só em elementos preenchidos. */
+  .chamfer {
+    clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
+  }
+  .chamfer-sm {
+    clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 6px 100%, 0 calc(100% - 6px));
+  }
+
+  /* Papel milimetrado de fundo: dá profundidade sem competir com o conteúdo. */
+  .grid-bg {
+    background-image:
+      linear-gradient(hsl(var(--foreground) / 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--foreground) / 0.04) 1px, transparent 1px);
+    background-size: 36px 36px;
+  }
+
+  /* LED de status: use com text-success / text-destructive etc. */
+  .led {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 9999px;
+    background: currentColor;
+    box-shadow: 0 0 10px 1px currentColor;
+  }
+  .led-pulse {
+    animation: led-pulse 1.6s ease-in-out infinite;
+  }
+
+  /* Painel padrão: borda fina, cantos quase retos, sem sombra. */
+  .panel {
+    @apply border border-border bg-card;
+  }
 }
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: hsl(var(--muted-foreground) / 0.3);
-  border-radius: 3px;
+  background: hsl(var(--muted-foreground) / 0.35);
+  border-radius: 0;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: hsl(var(--muted-foreground) / 0.5);
+  background: hsl(var(--muted-foreground) / 0.6);
+}
+
+@keyframes led-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
 }
 
 /* Pulse animation for alerts */
@@ -137,4 +205,11 @@
 }
 .animate-pulse-alert {
   animation: pulse-alert 1.5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .led-pulse,
+  .animate-pulse-alert {
+    animation: none;
+  }
 }

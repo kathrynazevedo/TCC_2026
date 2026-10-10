@@ -7,12 +7,16 @@
     "node": ">=20"
   },
   "scripts": {
-    "install:all": "npm --prefix backend_api install && npm --prefix frontend install",
+    "install:all": "npm install && npm --prefix backend_api install && npm --prefix frontend install",
+    "dev": "concurrently -k -n api,web -c cyan,magenta \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "npm --prefix backend_api run dev",
     "dev:web": "npm --prefix frontend run dev",
     "build": "npm --prefix frontend run build",
     "start": "npm --prefix backend_api start",
     "test": "npm --prefix backend_api test",
     "lint": "npm --prefix frontend run lint"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.6"
   }
 }

@@ -1,3 +1,5 @@
+const crypto = require('crypto');
+const env = require('../config/env');
 const db = require('../config/db');
 const imageStorage = require('../services/imageStorage');
 const HttpError = require('../utils/httpError');
@@ -13,6 +15,13 @@ const {
 
 const DEFAULT_LIMIT = 500;
 const MAX_LIMIT = 1000;
+const MAX_DELETE_BATCH = 1000;
+
+// Compara os hashes (tamanho fixo) em tempo constante, sem vazar o tamanho da senha.
+function passwordMatches(candidate) {
+  const digest = (value) => crypto.createHash('sha256').update(String(value)).digest();
+  return crypto.timingSafeEqual(digest(candidate), digest(env.deletePassword));
+}
 
 // POST /api/violations — chamada pela Raspberry Pi (multipart/form-data, campo "image").
 exports.registrarInfracao = async (req, res) => {
@@ -26,7 +35,7 @@ exports.registrarInfracao = async (req, res) => {
 
   const tipoEpi = normalizeEpiType(tipo_epi_ausente);
   if (!isKnownEpiType(tipoEpi)) {
-    throw new HttpError(400, 'tipo_epi_ausente inválido. Use "no-helmet" ou "no-vest".');
+    throw new HttpError(400, 'tipo_epi_ausente inválido. Use "no-helmet", "no-vest" ou "no-helmet-no-vest".');
   }
 
   const severidade = severity || 'high';
@@ -133,4 +142,36 @@ exports.updateStatus = async (req, res) => {
   }
 
   res.status(200).json({ message: 'Status atualizado com sucesso', data: result.rows[0] });
+};
+
+// DELETE /api/violations — exclusão em lote, protegida por senha: { ids: [1, 2], password: "..." }.
+exports.deleteViolations = async (req, res) => {
+  const { ids, password } = req.body || {};
+
+  // A senha é conferida aqui, no servidor: validar só no front não impediria uma chamada direta à API.
+  if (typeof password !== 'string' || !passwordMatches(password)) {
+    throw new HttpError(403, 'Senha incorreta.');
+  }
+
+  if (!Array.isArray(ids) || ids.length === 0) {
+    throw new HttpError(400, 'Informe ao menos uma infração para excluir.');
+  }
+  if (ids.length > MAX_DELETE_BATCH) {
+    throw new HttpError(400, `Exclua no máximo ${MAX_DELETE_BATCH} infrações por vez.`);
+  }
+  const uniqueIds = [...new Set(ids.map((id) => parseId(id)))];
+
+  const placeholders = uniqueIds.map((_, index) => `$${index + 1}`).join(', ');
+  const result = await db.query(
+    `DELETE FROM infracao WHERE id_infracao IN (${placeholders}) RETURNING id_infracao, imagem_url`,
+    uniqueIds
+  );
+
+  await imageStorage.deleteEvidencesByUrl(result.rows.map((row) => row.imagem_url).filter(Boolean));
+
+  res.status(200).json({
+    message: 'Infrações excluídas com sucesso',
+    deleted: result.rows.length,
+    ids: result.rows.map((row) => row.id_infracao),
+  });
 };

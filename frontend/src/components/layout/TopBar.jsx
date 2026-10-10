@@ -1,76 +1,131 @@
-import React from "react";
-import { Menu, ShieldCheck, Sun, Moon } from "lucide-react";
+import React, { useEffect, useState } from "react";
+import { useLocation } from "react-router-dom";
+import { format } from "date-fns";
+import { ptBR } from "date-fns/locale";
+import { HardHat, Menu, Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import Sidebar from "./Sidebar";
 import NotificationPanel from "./NotificationPanel";
 import { useAuth } from "@/lib/AuthContext";
+import { useEdgeStatus } from "@/api/queries";
 import { initials } from "@/lib/format";
+import { screenFor } from "@/lib/screens";
+
+// Relógio do painel: a sala de controle sempre mostra a hora do servidor de quem está olhando.
+function LiveClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  return (
+    <div className="hidden whitespace-nowrap text-right leading-none sm:block" aria-label="Data e hora atuais">
+      <div className="font-mono text-lg font-semibold tabular-nums text-foreground">{format(now, "HH:mm:ss")}</div>
+      <div className="mt-1 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+        {format(now, "EEE, dd MMM yyyy", { locale: ptBR })}
+      </div>
+    </div>
+  );
+}
+
+// Estado real da placa (heartbeat) e da API, atualizado a cada 10s.
+function LinkStatus() {
+  const { data, error, isLoading } = useEdgeStatus();
+
+  let tone = "text-muted-foreground";
+  let label = "Verificando";
+  if (error) {
+    tone = "text-destructive";
+    label = "API fora do ar";
+  } else if (data) {
+    tone = data.online ? "text-success" : "text-warning";
+    label = data.online ? "Placa online" : "Placa offline";
+  } else if (!isLoading) {
+    label = "Sem dados";
+  }
+
+  return (
+    <div className={`hidden items-center gap-2 whitespace-nowrap border border-border bg-card px-3 py-2 font-mono text-[11px] font-semibold uppercase tracking-wider md:flex ${tone}`}>
+      <span className="led led-pulse" />
+      {label}
+    </div>
+  );
+}
 
 export default function TopBar({ isDarkMode, setIsDarkMode }) {
   const { user } = useAuth();
+  const { pathname } = useLocation();
+  const screen = screenFor(pathname);
 
   return (
-    <header className="sticky top-0 z-40 flex h-20 shrink-0 items-center gap-x-4 border-b border-slate-200/60 dark:border-slate-800/60 bg-white/80 dark:bg-[#09090b]/80 backdrop-blur-md px-4 sm:px-6 lg:px-8 transition-colors duration-300">
-      
+    <header className="sticky top-0 z-40 flex h-16 shrink-0 items-center gap-x-4 border-b border-border bg-background/90 px-4 backdrop-blur sm:px-6 lg:px-8">
+      {/* linha de sinal: muda de cor com a tela */}
+      <span className="pointer-events-none absolute inset-x-0 bottom-[-1px] h-[2px] bg-signal" aria-hidden />
+
       <div className="flex lg:hidden">
         <Sheet>
           <SheetTrigger asChild>
-            <Button variant="ghost" size="icon" className="text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800">
+            <Button variant="ghost" size="icon" aria-label="Abrir menu" className="text-foreground hover:bg-accent">
               <Menu className="h-6 w-6" />
             </Button>
           </SheetTrigger>
-          <SheetContent side="left" className="p-0 w-72 border-none z-50">
+          <SheetContent side="left" className="z-50 w-72 border-none p-0">
             <div className="sr-only">
               <SheetTitle>Menu de Navegação</SheetTitle>
               <SheetDescription>Acesse as páginas do sistema SafeWork</SheetDescription>
             </div>
-            {/* Ocultamos as props de collapse no mobile para a sidebar sempre abrir inteira */}
+            {/* Sem as props de recolher: no celular o menu sempre abre inteiro */}
             <Sidebar />
           </SheetContent>
         </Sheet>
       </div>
 
       <div className="flex flex-1 items-center justify-between gap-x-4">
-        {/* Mobile Logo */}
+        {/* Logo no celular */}
         <div className="flex items-center gap-2 lg:hidden">
-          <div className="bg-blue-600/10 p-1.5 rounded-lg">
-            <ShieldCheck className="h-6 w-6 text-blue-600" />
+          <div className="chamfer-sm flex h-8 w-8 items-center justify-center bg-primary text-primary-foreground">
+            <HardHat className="h-5 w-5" />
           </div>
-          <span className="font-bold text-slate-900 dark:text-white text-lg">SafeWork</span>
+          <span className="display text-xl text-foreground">SafeWork</span>
         </div>
 
-        {/* Desktop Breadcrumb / Title */}
-        <div className="hidden lg:flex flex-col">
-          <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-widest mb-0.5">Módulo de IA</span>
-          <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">Painel de Controle Operacional</span>
+        {/* Onde estou */}
+        <div className="hidden min-w-0 whitespace-nowrap lg:block">
+          <div className="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">SafeWork / Sala de controle</div>
+          <div className="display mt-1 flex items-center gap-2 text-xl text-foreground">
+            <span className="font-mono text-sm font-semibold text-signal-ink">{screen.code}</span>
+            {screen.label}
+          </div>
         </div>
 
-        <div className="flex items-center gap-x-2 sm:gap-x-4 ml-auto">
-          
-          {/* Toggle Dark Mode */}
+        <div className="ml-auto flex items-center gap-x-2 sm:gap-x-4">
+          <LinkStatus />
+          <LiveClock />
+
+          <span className="mx-1 hidden h-8 w-px bg-border sm:block" aria-hidden />
+
           <Button
             variant="ghost"
             size="icon"
             aria-label="Alternar tema"
             onClick={() => setIsDarkMode(!isDarkMode)}
-            className="text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-all"
+            className="text-foreground hover:bg-accent"
           >
             {isDarkMode ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
           </Button>
 
           <NotificationPanel />
-          
-          <div className="h-8 w-[1px] bg-slate-200 dark:bg-slate-700 hidden sm:block mx-1" />
-          
-          <div className="flex items-center gap-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 p-1.5 rounded-xl transition-colors">
-             <div className="hidden sm:block text-right">
-                <p className="text-sm font-bold text-slate-800 dark:text-slate-100 leading-none">{user.role}</p>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">Gestão Completa</p>
-             </div>
-             <div className="h-9 w-9 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white text-xs font-bold shadow-md shadow-blue-500/20 border-2 border-white dark:border-slate-800 shrink-0">
-                {initials(user.name)}
-             </div>
+
+          <div className="flex items-center gap-3 pl-1">
+            <div className="hidden whitespace-nowrap text-right xl:block">
+              <p className="text-sm font-semibold leading-none text-foreground">{user.role}</p>
+              <p className="mt-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">Gestão completa</p>
+            </div>
+            <div className="chamfer-sm flex h-10 w-10 shrink-0 items-center justify-center bg-signal font-mono text-xs font-bold text-signal-foreground">
+              {initials(user.name)}
+            </div>
           </div>
         </div>
       </div>

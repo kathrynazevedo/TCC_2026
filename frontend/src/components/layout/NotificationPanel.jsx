@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Bell, AlertTriangle, Clock } from "lucide-react";
+import { Bell, Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -9,7 +9,6 @@ import { timeAgo } from "@/lib/format";
 import { typeLabel } from "@/lib/violationLabels";
 
 export default function NotificationPanel() {
-  // Controle de estado para fechar o menu ao clicar no link
   const [isOpen, setIsOpen] = useState(false);
 
   const { data: violations = [] } = useViolations();
@@ -18,61 +17,54 @@ export default function NotificationPanel() {
   return (
     <Popover open={isOpen} onOpenChange={setIsOpen}>
       <PopoverTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label="Alertas de campo" className="relative hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0">
-          <Bell className="h-5 w-5 text-slate-600 dark:text-slate-300" />
+        <Button variant="ghost" size="icon" aria-label="Alertas de campo" className="relative shrink-0 text-foreground hover:bg-accent">
+          <Bell className="h-5 w-5" />
           {alerts.length > 0 && (
-            <span className="absolute top-2 right-2 flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+            <span className="absolute right-1 top-1 flex min-w-[18px] items-center justify-center bg-destructive px-1 font-mono text-[10px] font-bold leading-[18px] text-destructive-foreground">
+              {alerts.length}
             </span>
           )}
         </Button>
       </PopoverTrigger>
 
-      <PopoverContent
-        className="w-[calc(100vw-32px)] sm:w-96 p-0 mt-2 bg-white dark:bg-slate-900 shadow-2xl border border-slate-200 dark:border-slate-800 z-50"
-        align="end"
-        sideOffset={8}
-      >
-        <div className="p-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
-          <h3 className="font-bold text-sm text-slate-800 dark:text-slate-100">Alertas de Campo</h3>
+      <PopoverContent className="z-50 mt-2 w-[calc(100vw-32px)] border border-border bg-popover p-0 shadow-2xl sm:w-96" align="end" sideOffset={8}>
+        <div className="hazard h-1" aria-hidden />
+        <div className="flex items-center justify-between border-b border-border bg-surface px-4 py-3">
+          <h3 className="display text-lg text-foreground">Alertas de campo</h3>
+          <span className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">{alerts.length} pendente(s)</span>
         </div>
 
-        <ScrollArea className="h-[400px] bg-white dark:bg-slate-900">
+        <ScrollArea className="h-[400px]">
           {alerts.length > 0 ? (
-            <div className="divide-y divide-slate-100 dark:divide-slate-800">
+            <div className="divide-y divide-border">
               {alerts.map((v) => (
-                <div key={v.id} className="p-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                  <div className="flex gap-3">
-                    <div className="mt-1 shrink-0">
-                      <AlertTriangle className="h-4 w-4 text-red-500" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-xs font-bold text-slate-900 dark:text-slate-100 uppercase">{typeLabel(v.type, "alert")}</p>
-                      <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">{v.zone}</p>
-                      <div className="flex items-center gap-1 mt-2 text-[10px] text-slate-400">
-                        <Clock className="h-3 w-3" />
-                        {timeAgo(v.detected_at)}
-                      </div>
+                <div key={v.id} className="flex gap-3 border-l-[3px] border-l-destructive px-4 py-3 transition-colors hover:bg-accent/50">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-bold uppercase tracking-wide text-foreground">{typeLabel(v.type, "alert")}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{v.zone}</p>
+                    <div className="mt-2 flex items-center gap-1 font-mono text-[10px] uppercase text-muted-foreground">
+                      <Clock className="h-3 w-3" />
+                      {timeAgo(v.detected_at)}
                     </div>
                   </div>
                 </div>
               ))}
             </div>
           ) : (
-            <div className="flex flex-col items-center justify-center py-20 text-slate-400">
-              <p className="text-xs font-medium">Nenhum alerta pendente</p>
+            <div className="flex flex-col items-center justify-center gap-2 py-20 text-muted-foreground">
+              <span className="led text-success" />
+              <p className="font-mono text-xs uppercase tracking-wider">Nenhum alerta pendente</p>
             </div>
           )}
         </ScrollArea>
 
-        <div className="p-3 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 text-center">
+        <div className="border-t border-border bg-surface p-3 text-center">
           <Link
             to="/violations"
             onClick={() => setIsOpen(false)}
-            className="text-[10px] font-bold text-blue-600 dark:text-blue-400 uppercase hover:underline block w-full"
+            className="block w-full font-mono text-[11px] font-bold uppercase tracking-widest text-signal-ink hover:underline"
           >
-            Ver todo o histórico
+            Ver todo o histórico →
           </Link>
         </div>
       </PopoverContent>

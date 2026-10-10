@@ -1,5 +1,6 @@
 import React, { useEffect } from "react";
 import { Camera, X } from "lucide-react";
+import Brackets from "@/components/common/Brackets";
 
 /** Modal com a foto da infração. Fecha com Esc, clicando fora ou no botão. */
 export default function EvidenceModal({ src, onClose }) {
@@ -14,31 +15,35 @@ export default function EvidenceModal({ src, onClose }) {
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4 animate-in fade-in duration-200"
+      className="animate-in fade-in fixed inset-0 z-[100] flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm duration-200"
       onClick={onClose}
       role="dialog"
       aria-modal="true"
       aria-label="Captura da infração"
     >
       <div
-        className="relative bg-white dark:bg-slate-900 rounded-xl shadow-2xl max-w-4xl w-full overflow-hidden border border-slate-200 dark:border-slate-800"
+        // data-screen: o modal precisa da cor de sinal das violações, mesmo aberto a partir do dashboard
+        data-screen="violations"
+        className="relative w-full max-w-4xl overflow-hidden border border-border bg-card shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex justify-between items-center p-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
-          <h3 className="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
-            <Camera className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-            Evidência Capturada pela IA
+        <div className="hazard h-2" aria-hidden />
+        <div className="flex items-center justify-between border-b border-border bg-surface px-4 py-3">
+          <h3 className="display flex items-center gap-2.5 text-xl text-foreground">
+            <Camera className="h-5 w-5 text-signal-ink" />
+            Evidência capturada pela IA
           </h3>
           <button
             onClick={onClose}
             aria-label="Fechar"
-            className="p-1.5 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full transition-colors text-slate-500 dark:text-slate-400"
+            className="p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
-            <X className="w-5 h-5" />
+            <X className="h-5 w-5" />
           </button>
         </div>
-        <div className="bg-slate-100 dark:bg-black/50 flex items-center justify-center p-4 min-h-[300px]">
-          <img src={src} alt="Registro da infração gerado pelo YOLO" className="w-full h-auto max-h-[70vh] object-contain rounded shadow-sm" />
+        <div className="relative flex min-h-[300px] items-center justify-center bg-black p-4">
+          <Brackets className="inset-4" />
+          <img src={src} alt="Registro da infração gerado pelo YOLO" className="h-auto max-h-[70vh] w-full object-contain" />
         </div>
       </div>
     </div>

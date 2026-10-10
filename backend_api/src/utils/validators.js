@@ -4,7 +4,11 @@ const SEVERITIES = ['low', 'medium', 'high', 'critical'];
 const STATUSES = ['active', 'acknowledged', 'resolved'];
 
 // Códigos canônicos usados em todo o sistema (placa, banco e dashboard).
+// 'no-helmet-no-vest' = a mesma pessoa/quadro sem capacete E sem colete (um único registro, não dois).
 const EPI_ALIASES = {
+  'no-helmet-no-vest': 'no-helmet-no-vest',
+  'sem_capacete_colete': 'no-helmet-no-vest',
+  'sem-capacete-colete': 'no-helmet-no-vest',
   'no-helmet': 'no-helmet',
   'sem_capacete': 'no-helmet',
   'sem-capacete': 'no-helmet',

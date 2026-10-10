@@ -1,10 +1,16 @@
 import React, { useMemo } from "react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { isSameDay } from "date-fns";
+import { BarChart3 } from "lucide-react";
+import { lacksHelmet, lacksVest } from "@/lib/violationLabels";
 
 const HELMET = "Risco Cabeça";
 const VEST = "Risco Corpo";
+
+// Cores fixas (o SVG do gráfico não herda as variáveis do tema); funcionam nos dois temas.
+const RED = "#ff3b3b";
+const ORANGE = "#ff9500";
+const AXIS = "#8b93a1";
 
 export default function ViolationChart({ violations = [] }) {
   const chartData = useMemo(() => {
@@ -19,39 +25,50 @@ export default function ViolationChart({ violations = [] }) {
     for (const v of violations) {
       const date = new Date(v.detected_at);
       if (Number.isNaN(date.getTime()) || !isSameDay(date, now)) continue;
-      if (v.type === "no-helmet") hours[date.getHours()][HELMET] += 1;
-      if (v.type === "no-vest") hours[date.getHours()][VEST] += 1;
+      // "Sem capacete e colete" soma nas duas séries: a ocorrência traz os dois riscos.
+      if (lacksHelmet(v.type)) hours[date.getHours()][HELMET] += 1;
+      if (lacksVest(v.type)) hours[date.getHours()][VEST] += 1;
     }
     return hours;
   }, [violations]);
 
   return (
-    <Card className="shadow-md border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
-      <CardHeader>
-        <CardTitle className="text-lg font-bold text-slate-800 dark:text-slate-100">Gráfico de Densidade de Incidentes</CardTitle>
-        <CardDescription>Ocorrências de hoje por hora — apoio ao planejamento do DDS (Diálogo Diário de Segurança)</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="h-[300px] w-full mt-2">
+    <section className="panel overflow-hidden">
+      <div className="flex items-center gap-3 border-b border-border bg-surface px-5 py-4">
+        <BarChart3 className="h-5 w-5 text-signal-ink" />
+        <div>
+          <h2 className="display text-xl text-foreground">Densidade de incidentes</h2>
+          <p className="mt-1 font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
+            Ocorrências de hoje por hora · apoio ao DDS
+          </p>
+        </div>
+      </div>
+      <div className="p-5">
+        <div className="h-[300px] w-full">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={chartData}>
+            <AreaChart data={chartData} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
               <defs>
                 <linearGradient id="colorHelmet" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#ef4444" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#ef4444" stopOpacity={0} />
+                  <stop offset="5%" stopColor={RED} stopOpacity={0.45} />
+                  <stop offset="95%" stopColor={RED} stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" strokeOpacity={0.25} />
-              <XAxis dataKey="time" axisLine={false} tickLine={false} interval={2} tick={{ fill: "#64748b", fontSize: 12 }} />
-              <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: "#64748b", fontSize: 12 }} />
-              <Tooltip contentStyle={{ backgroundColor: "#1e293b", border: "none", borderRadius: "8px", color: "#fff" }} itemStyle={{ color: "#fff" }} />
-              <Legend verticalAlign="top" align="right" />
-              <Area type="monotone" dataKey={HELMET} stroke="#ef4444" fillOpacity={1} fill="url(#colorHelmet)" strokeWidth={3} />
-              <Area type="monotone" dataKey={VEST} stroke="#f97316" fillOpacity={0} strokeWidth={3} strokeDasharray="5 5" />
+              <CartesianGrid strokeDasharray="2 4" vertical={false} stroke={AXIS} strokeOpacity={0.3} />
+              <XAxis dataKey="time" axisLine={false} tickLine={false} interval={2} tick={{ fill: AXIS, fontSize: 11, fontFamily: "JetBrains Mono" }} />
+              <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: AXIS, fontSize: 11, fontFamily: "JetBrains Mono" }} />
+              <Tooltip
+                cursor={{ stroke: AXIS, strokeDasharray: "3 3" }}
+                contentStyle={{ backgroundColor: "#0c0e12", border: "1px solid #2a2f38", borderRadius: 0, color: "#fff", fontFamily: "JetBrains Mono", fontSize: 12 }}
+                itemStyle={{ color: "#fff" }}
+                labelStyle={{ color: "#8b93a1" }}
+              />
+              <Legend verticalAlign="top" align="right" iconType="square" wrapperStyle={{ fontFamily: "JetBrains Mono", fontSize: 11 }} />
+              <Area type="monotone" dataKey={HELMET} stroke={RED} fillOpacity={1} fill="url(#colorHelmet)" strokeWidth={2.5} />
+              <Area type="monotone" dataKey={VEST} stroke={ORANGE} fillOpacity={0} strokeWidth={2.5} strokeDasharray="6 4" />
             </AreaChart>
           </ResponsiveContainer>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 }
