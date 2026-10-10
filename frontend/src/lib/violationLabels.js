@@ -16,7 +16,21 @@ export const lacksVest = (type) => type === "no-vest" || type === "no-helmet-no-
 /** kind: "short" | "alert" | "long" */
 export const typeLabel = (type, kind = "short") => (TYPES[type] || UNKNOWN_TYPE)[kind];
 
+/** "Pessoa 2 de 3" quando a infração veio de uma ocorrência (cena completa); "" nos registros antigos. */
+export const personLabel = (v) => {
+  if (v?.person_number === null || v?.person_number === undefined) return "";
+  return v.people_total ? `Pessoa ${v.person_number} de ${v.people_total}` : `Pessoa ${v.person_number}`;
+};
+
 // "color" usa os tokens do tema (claro/escuro), não cores fixas.
+
+/** Estado de um EPI de uma pessoa na cena, como a placa o enviou. */
+export const epiStateConfig = {
+  ok: { label: "OK", color: "border-success/50 bg-success/10 text-success" },
+  ausente: { label: "Ausente", color: "border-destructive/50 bg-destructive/10 text-destructive" },
+  desconhecido: { label: "Não detectado", color: "border-border bg-muted text-muted-foreground" },
+};
+
 export const statusConfig = {
   active: { label: "Ativa", pdf: "PENDENTE", color: "border-destructive/50 bg-destructive/10 text-destructive" },
   acknowledged: { label: "Reconhecida", pdf: "EM ANÁLISE", color: "border-warning/50 bg-warning/10 text-warning" },

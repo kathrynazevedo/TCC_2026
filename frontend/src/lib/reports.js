@@ -1,6 +1,6 @@
 import { format } from "date-fns";
 import { formatDateTime } from "@/lib/format";
-import { typeLabel, statusConfig, lacksHelmet, lacksVest } from "@/lib/violationLabels";
+import { typeLabel, statusConfig, personLabel, lacksHelmet, lacksVest } from "@/lib/violationLabels";
 
 function download(blob, filename) {
   const url = URL.createObjectURL(blob);
@@ -24,12 +24,16 @@ const csvCell = (value) => {
 };
 
 export function buildCsv(violations) {
-  const header = ["ID", "Data/Hora", "Zona", "Tipo", "Status", "Evidência (URL)"];
+  // A main tirou confiança e severidade da tela e dos relatórios; Pessoa e Captura vêm do envio por cena
+  // ("Captura" = id da cena inteira; várias infrações da mesma foto compartilham o mesmo número).
+  const header = ["ID", "Data/Hora", "Zona", "Tipo", "Pessoa", "Captura", "Status", "Evidência (URL)"];
   const rows = violations.map((v) => [
     v.id,
     formatDateTime(v.detected_at, "dd/MM/yyyy HH:mm:ss"),
     v.zone,
     typeLabel(v.type, "long"),
+    personLabel(v),
+    v.occurrence_id ?? "",
     (statusConfig[v.status] || statusConfig.active).label,
     v.imagem_url || "",
   ]);

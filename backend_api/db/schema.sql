@@ -27,6 +27,21 @@ CREATE TABLE IF NOT EXISTS infracao (
   severidade          VARCHAR(20) NOT NULL DEFAULT 'high'    -- 'low' | 'medium' | 'high' | 'critical'
 );
 
+-- Ocorrência: uma captura da câmera com a cena inteira (foto + todas as pessoas e seus EPIs).
+-- Cada infração nova da cena vira uma linha em "infracao" ligada a ela (id_ocorrencia + numero_pessoa).
+CREATE TABLE IF NOT EXISTS ocorrencia (
+  id_ocorrencia       SERIAL PRIMARY KEY,
+  id_dispositivo      INTEGER NOT NULL REFERENCES dispositivo_borda (id_dispositivo),
+  timestamp_deteccao  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  imagem_url          TEXT,
+  total_pessoas       INTEGER NOT NULL DEFAULT 0,           -- pessoas em cena (com ou sem EPI)
+  pessoas             JSONB NOT NULL DEFAULT '[]'           -- [{numero, caixa, capacete, colete}], ver validators.js
+);
+
+-- Bancos criados antes das ocorrências ganham as colunas novas (registros antigos ficam com NULL).
+ALTER TABLE infracao ADD COLUMN IF NOT EXISTS id_ocorrencia INTEGER REFERENCES ocorrencia (id_ocorrencia) ON DELETE SET NULL;
+ALTER TABLE infracao ADD COLUMN IF NOT EXISTS numero_pessoa INTEGER;
+
 CREATE TABLE IF NOT EXISTS trabalhador (
   id_trabalhador  SERIAL PRIMARY KEY,
   nome            VARCHAR(150) NOT NULL,
@@ -38,3 +53,4 @@ CREATE TABLE IF NOT EXISTS trabalhador (
 -- A listagem e as métricas ordenam/filtram por estas colunas.
 CREATE INDEX IF NOT EXISTS idx_infracao_timestamp ON infracao (timestamp_deteccao DESC);
 CREATE INDEX IF NOT EXISTS idx_infracao_status    ON infracao (status_resolucao);
+CREATE INDEX IF NOT EXISTS idx_infracao_ocorrencia ON infracao (id_ocorrencia);

@@ -4,7 +4,7 @@ import { MapPin, Radio } from "lucide-react";
 import StatusTag from "@/components/common/StatusTag";
 import { cn } from "@/lib/utils";
 import { formatDateTime } from "@/lib/format";
-import { typeLabel } from "@/lib/violationLabels";
+import { typeLabel, personLabel } from "@/lib/violationLabels";
 
 const BAR = {
   active: "border-l-destructive",
@@ -51,6 +51,7 @@ export default function AlertFeed({ violations = [], total }) {
                   <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
                     <MapPin className="h-3 w-3 shrink-0" />
                     <span className="truncate">{v.zone}</span>
+                    {personLabel(v) && <span className="shrink-0 font-mono">· {personLabel(v)}</span>}
                   </span>
                   <StatusTag status={v.status} />
                 </div>

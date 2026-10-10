@@ -15,7 +15,7 @@ import DeleteViolationsDialog from "@/components/common/DeleteViolationsDialog";
 import PageHeader from "@/components/common/PageHeader";
 import StatusTag from "@/components/common/StatusTag";
 import { formatDateTime } from "@/lib/format";
-import { typeLabel } from "@/lib/violationLabels";
+import { typeLabel, personLabel } from "@/lib/violationLabels";
 
 const itemClass = "cursor-pointer font-mono text-xs uppercase tracking-wide focus:bg-accent focus:text-accent-foreground";
 const triggerClass = "h-10 w-48 rounded-sm border-input bg-background font-mono text-xs uppercase tracking-wide text-foreground";
@@ -41,7 +41,7 @@ const UNKNOWN_TYPE_STYLE = { icons: [AlertTriangle], color: "border-border bg-mu
 export default function Violations() {
   const [filterZone, setFilterZone] = useState("all");
   const [filterStatus, setFilterStatus] = useState("all");
-  const [selectedImage, setSelectedImage] = useState(null);
+  const [evidence, setEvidence] = useState(null); // violação cuja foto/cena está aberta no modal
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [deleteOpen, setDeleteOpen] = useState(false);
   const { toast } = useToast();
@@ -244,6 +244,7 @@ export default function Violations() {
                 <TableHead className={cn(headClass, "whitespace-nowrap")}>Data / hora</TableHead>
                 <TableHead className={headClass}>Zona</TableHead>
                 <TableHead className={headClass}>Ocorrência</TableHead>
+                <TableHead className={headClass}>Pessoa</TableHead>
                 <TableHead className={headClass}>Status</TableHead>
                 <TableHead className={cn(headClass, "pr-6 text-right")}>Ações</TableHead>
               </TableRow>
@@ -295,6 +296,10 @@ export default function Violations() {
                       </span>
                     </TableCell>
 
+                    <TableCell className="whitespace-nowrap py-3.5 font-mono text-xs uppercase tracking-wide text-muted-foreground">
+                      {personLabel(v) || "—"}
+                    </TableCell>
+
                     <TableCell className="py-3.5">
                       <StatusTag status={v.status} />
                     </TableCell>
@@ -303,7 +308,7 @@ export default function Violations() {
                       {/* Cada botão tem a sua "vaga" de largura fixa: as colunas ficam alinhadas entre as linhas. */}
                       <div className="flex items-center justify-end gap-2">
                         <Button
-                          onClick={() => setSelectedImage(v.imagem_url)}
+                          onClick={() => setEvidence(v)}
                           disabled={!v.imagem_url}
                           variant="outline"
                           aria-label="Ver evidência"
@@ -342,7 +347,7 @@ export default function Violations() {
               })}
               {filtered.length === 0 && (
                 <TableRow className="hover:bg-transparent">
-                  <TableCell className="py-16 text-center text-muted-foreground" colSpan={6}>
+                  <TableCell className="py-16 text-center text-muted-foreground" colSpan={7}>
                     <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center border border-border bg-surface">
                       <AlertTriangle className="h-8 w-8 text-signal-ink" />
                     </div>
@@ -358,7 +363,13 @@ export default function Violations() {
         </div>
       </div>
 
-      <EvidenceModal src={selectedImage} onClose={() => setSelectedImage(null)} />
+      <EvidenceModal
+        src={evidence?.imagem_url}
+        people={evidence?.people}
+        peopleTotal={evidence?.people_total}
+        highlight={evidence?.person_number}
+        onClose={() => setEvidence(null)}
+      />
 
       <DeleteViolationsDialog
         open={deleteOpen}

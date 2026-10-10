@@ -105,10 +105,15 @@ exports.getViolations = async (req, res) => {
         COALESCE(i.status_resolucao, 'active') AS status,
         i.score_confianca AS confidence,
         i.timestamp_deteccao AS detected_at,
-        i.imagem_url
+        i.imagem_url,
+        i.id_ocorrencia AS occurrence_id,
+        i.numero_pessoa AS person_number,
+        o.total_pessoas AS people_total,
+        o.pessoas AS people
      FROM infracao i
      LEFT JOIN dispositivo_borda d ON i.id_dispositivo = d.id_dispositivo
      LEFT JOIN area a ON d.id_area = a.id_area
+     LEFT JOIN ocorrencia o ON i.id_ocorrencia = o.id_ocorrencia
      ${where}
      ORDER BY i.timestamp_deteccao DESC
      LIMIT $1`,
@@ -163,11 +168,35 @@ exports.deleteViolations = async (req, res) => {
 
   const placeholders = uniqueIds.map((_, index) => `$${index + 1}`).join(', ');
   const result = await db.query(
-    `DELETE FROM infracao WHERE id_infracao IN (${placeholders}) RETURNING id_infracao, imagem_url`,
+    `DELETE FROM infracao WHERE id_infracao IN (${placeholders}) RETURNING id_infracao, imagem_url, id_ocorrencia`,
     uniqueIds
   );
 
-  await imageStorage.deleteEvidencesByUrl(result.rows.map((row) => row.imagem_url).filter(Boolean));
+  // Uma captura gera várias infrações (uma por pessoa) que dividem a MESMA foto, e a própria ocorrência também a
+  // referencia. Por isso a foto só sai do Cloudinary quando nenhuma infração restante a usa, e a ocorrência que
+  // ficou sem infrações é removida junto.
+  const ocorrencias = [...new Set(result.rows.map((row) => row.id_ocorrencia).filter((id) => id != null))];
+  if (ocorrencias.length > 0) {
+    const marcas = ocorrencias.map((_, index) => `$${index + 1}`).join(', ');
+    await db.query(
+      `DELETE FROM ocorrencia
+        WHERE id_ocorrencia IN (${marcas})
+          AND id_ocorrencia NOT IN (SELECT id_ocorrencia FROM infracao WHERE id_ocorrencia IS NOT NULL)`,
+      ocorrencias
+    );
+  }
+
+  let imagensParaApagar = [...new Set(result.rows.map((row) => row.imagem_url).filter(Boolean))];
+  if (imagensParaApagar.length > 0) {
+    const marcas = imagensParaApagar.map((_, index) => `$${index + 1}`).join(', ');
+    const emUso = await db.query(
+      `SELECT DISTINCT imagem_url FROM infracao WHERE imagem_url IN (${marcas})`,
+      imagensParaApagar
+    );
+    const usadas = new Set(emUso.rows.map((row) => row.imagem_url));
+    imagensParaApagar = imagensParaApagar.filter((url) => !usadas.has(url));
+  }
+  await imageStorage.deleteEvidencesByUrl(imagensParaApagar);
 
   res.status(200).json({
     message: 'Infrações excluídas com sucesso',

@@ -1,15 +1,18 @@
-import React, { useState } from "react";
-import { Camera, Maximize2, ShieldCheck } from "lucide-react";
+import React, { useMemo, useState } from "react";
+import { Camera, Maximize2, ShieldCheck, Users } from "lucide-react";
 import EvidenceModal from "@/components/common/EvidenceModal";
 import Brackets from "@/components/common/Brackets";
 import { formatDateTime } from "@/lib/format";
+import { groupByOccurrence } from "@/lib/occurrences";
 import { typeLabel } from "@/lib/violationLabels";
 
+const MAX_TAGS = 3;
 const camLabel = (id) => `CAM ${String(id ?? 0).padStart(2, "0")}`;
 
 export default function RecentViolations({ violations = [] }) {
-  const [selectedImage, setSelectedImage] = useState(null);
-  const recent = violations.slice(0, 6);
+  const [selected, setSelected] = useState(null);
+  // Uma captura com várias infrações é um único cartão: a foto aparece uma vez, com todas as pessoas.
+  const recent = useMemo(() => groupByOccurrence(violations).slice(0, 6), [violations]);
 
   return (
     <section className="panel overflow-hidden">
@@ -36,10 +39,10 @@ export default function RecentViolations({ violations = [] }) {
         ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {recent.map((v) => (
-              <figure key={v.id} className="group m-0 border border-border bg-black">
+              <figure key={v.key} className="group m-0 border border-border bg-black">
                 <div
                   className={`relative aspect-video overflow-hidden ${v.imagem_url ? "cursor-pointer" : ""}`}
-                  onClick={() => v.imagem_url && setSelectedImage(v.imagem_url)}
+                  onClick={() => v.imagem_url && setSelected(v)}
                 >
                   {v.imagem_url ? (
                     <img
@@ -57,16 +60,34 @@ export default function RecentViolations({ violations = [] }) {
 
                   <Brackets />
 
-                  {/* "OSD" de câmera de monitoramento */}
-                  <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/80 to-transparent p-2.5 pb-6 font-mono text-[10px] font-semibold uppercase tracking-wider text-white">
+                  {/* "OSD" de câmera de monitoramento: uma etiqueta por pessoa/infração da mesma captura */}
+                  <div className="absolute inset-x-0 top-0 flex items-start justify-between bg-gradient-to-b from-black/80 to-transparent p-2.5 pb-6 font-mono text-[10px] font-semibold uppercase tracking-wider text-white">
                     <span className="flex items-center gap-1.5">
                       <span className="led led-pulse !h-1.5 !w-1.5 text-destructive" /> {camLabel(v.id_dispositivo)}
                     </span>
-                    <span className="bg-destructive px-1.5 py-0.5 text-destructive-foreground">{typeLabel(v.type)}</span>
+                    <span className="flex flex-col items-end gap-1">
+                      {v.items.slice(0, MAX_TAGS).map((item) => (
+                        <span key={item.id} className="bg-destructive px-1.5 py-0.5 text-destructive-foreground">
+                          {item.person_number ? `P${item.person_number} · ` : ""}
+                          {typeLabel(item.type)}
+                        </span>
+                      ))}
+                      {v.items.length > MAX_TAGS && (
+                        <span className="bg-black/70 px-1.5 py-0.5 text-white">+{v.items.length - MAX_TAGS}</span>
+                      )}
+                    </span>
                   </div>
                   <div className="absolute inset-x-0 bottom-0 flex items-end justify-between bg-gradient-to-t from-black/85 to-transparent p-2.5 pt-6 font-mono text-[10px] uppercase tracking-wider text-white">
                     <span>{formatDateTime(v.detected_at, "dd/MM/yy HH:mm:ss")}</span>
-                    <span className="max-w-[45%] truncate text-white/80">{v.zone}</span>
+                    <span className="flex max-w-[55%] items-center gap-2 text-white/80">
+                      {v.people_total ? (
+                        <span className="flex items-center gap-1" title="Pessoas em cena nesta captura">
+                          <Users className="h-3 w-3" />
+                          {v.people_total}
+                        </span>
+                      ) : null}
+                      <span className="truncate">{v.zone}</span>
+                    </span>
                   </div>
 
                   {v.imagem_url && (
@@ -83,7 +104,12 @@ export default function RecentViolations({ violations = [] }) {
         )}
       </div>
 
-      <EvidenceModal src={selectedImage} onClose={() => setSelectedImage(null)} />
+      <EvidenceModal
+        src={selected?.imagem_url}
+        people={selected?.people}
+        peopleTotal={selected?.people_total}
+        onClose={() => setSelected(null)}
+      />
     </section>
   );
 }
