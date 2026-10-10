@@ -9,7 +9,7 @@ import cv2
 
 import cliente_api
 import config
-from deteccao import Debounce, resumir_infracoes, classificar
+from deteccao import ROTULOS, AlertasPorPessoa, classificar, ocorrencia_da_cena
 
 # ==========================================
 # SIRENE (GPIO) — simulada quando não está numa Raspberry
@@ -114,6 +114,43 @@ def desenhar(frame, nome, confianca, caixa):
     cv2.putText(frame, f"{nome} {confianca:.2f}", (x1, max(15, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, cor, 2)
 
 
+def descrever(numero, infracoes):
+    """Ex.: 'Pessoa 2: sem capacete, sem colete' ou 'Pessoa 1: ok'."""
+    return f"Pessoa {numero}: " + (", ".join(ROTULOS.get(t, t) for t in infracoes) or "ok")
+
+
+def _cracha(frame, texto, x, y, cor):
+    """Faixa colorida com texto branco, com o canto superior esquerdo em (x, y), mantida dentro do frame."""
+    (largura, altura), _ = cv2.getTextSize(texto, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+    alto, largo = frame.shape[:2]
+    x = max(0, min(x, largo - largura - 8))
+    y = max(0, min(y, alto - altura - 8))
+    cv2.rectangle(frame, (x, y), (x + largura + 8, y + altura + 8), cor, -1)
+    cv2.putText(frame, texto, (x + 4, y + altura + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
+
+
+def desenhar_pessoa(frame, numero, pessoa, infracoes):
+    """Crachá na cabeça, crachá curto no tronco e uma linha ligando os dois (vai na foto enviada à API).
+
+    O crachá do tronco fica na vertical da cabeça, não no canto da caixa: o modelo às vezes desenha um colete largo
+    cobrindo duas pessoas, e assim cada uma aparece marcada sobre o próprio corpo.
+    """
+    cor = (0, 0, 255) if infracoes else (0, 160, 0)
+    cabeca, tronco = pessoa.cabeca, pessoa.tronco
+    if cabeca is None:
+        _cracha(frame, descrever(numero, infracoes), tronco.caixa[0], tronco.caixa[1], cor)
+        return
+
+    hx1, hy1, hx2, hy2 = cabeca.caixa
+    _cracha(frame, descrever(numero, infracoes), hx1, hy1, cor)
+    if tronco is not None:
+        tx1, ty1, tx2, _ = tronco.caixa
+        meio = (hx1 + hx2) // 2
+        alvo = min(max(meio, tx1), tx2)  # a vertical da cabeça, mantida dentro da caixa do tronco
+        cv2.line(frame, (meio, hy2), (alvo, ty1), (0, 255, 255), 1)  # amarelo: liga a cabeça ao tronco dela
+        _cracha(frame, f"Pessoa {numero}", alvo - 38, ty1, cor)
+
+
 def main():
     # Import tardio: carregar o ultralytics demora e não é necessário para os testes dos outros módulos.
     from ultralytics import YOLO
@@ -135,7 +172,16 @@ def main():
     for alvo, args in ((thread_captura, (fila,)), (thread_heartbeat, ()), (thread_sincronizacao, ())):
         threading.Thread(target=alvo, args=args, daemon=True).start()
 
-    debounce = Debounce(config.TEMPO_DEBOUNCE)
+    alertas = AlertasPorPessoa(
+        config.TEMPO_REALERTA,
+        config.RASTREADOR_TEMPO_AUSENTE,
+        config.RASTREADOR_DIST_MAXIMA,
+        config.RASTREADOR_TEMPO_PRESENTE,
+        config.CONFIANCA_MINIMA,
+    )
+    situacao_anterior = ()  # só imprime a situação da cena quando ela muda
+    repeticao = f"repete a cada {config.TEMPO_REALERTA:g}s" if config.TEMPO_REALERTA > 0 else "sem repetição"
+    print(f"[ALERTAS] Um por pessoa em infração ({repeticao}); esquece quem some por {config.RASTREADOR_TEMPO_AUSENTE:g}s.")
     print("Monitoramento iniciado. Pressione Ctrl+C para sair.")
 
     try:
@@ -151,19 +197,36 @@ def main():
             for box in resultado.boxes:
                 nome = model.names[int(box.cls[0])]
                 confianca = float(box.conf[0])
-                deteccoes.append((nome, confianca))
-                desenhar(frame, nome, confianca, map(int, box.xyxy[0]))
+                deteccoes.append((nome, confianca, tuple(map(int, box.xyxy[0]))))
 
-            infracoes = resumir_infracoes(deteccoes, config.CONFIANCA_MINIMA)
-            novos = [(tipo, conf) for tipo, conf in infracoes.items() if debounce.permitir(tipo, time.monotonic())]
+            # Chamado a cada frame (mesmo sem detecções) para o rastreador perceber quem saiu de cena.
+            cena = alertas.filtrar(deteccoes, time.monotonic())
 
-            if novos:
+            # Só desenha o que foi mantido: caixas duplicadas descartadas não poluem a foto de evidência.
+            for numero, pessoa, infracoes in cena.pessoas:
+                for parte in pessoa.partes():
+                    desenhar(frame, parte.nome, parte.confianca, parte.caixa)
+                desenhar_pessoa(frame, numero, pessoa, infracoes)
+
+            if cena.situacao != situacao_anterior:
+                situacao_anterior = cena.situacao
+                if cena.situacao:
+                    resumo = " | ".join(descrever(numero, tipos) for numero, tipos in cena.situacao)
+                    print(f"[CENA] {len(cena.situacao)} pessoa(s) em cena: {resumo}")
+                else:
+                    print("[CENA] ninguém em cena")
+
+            if cena.alertas:
                 acionar_sirene()
                 sucesso, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 if sucesso:
-                    jpeg = buffer.tobytes()
-                    for tipo, conf in novos:
-                        threading.Thread(target=cliente_api.processar_alerta, args=(jpeg, tipo, conf), daemon=True).start()
+                    for tipo, conf, numero in cena.alertas:
+                        print(f"[ALERTA] {ROTULOS.get(tipo, tipo)}: pessoa {numero}, confiança {conf:.2f}")
+                    # A cena inteira vai numa única requisição: uma foto, todas as pessoas e o que é novo.
+                    ocorrencia = ocorrencia_da_cena(cena, config.ID_DISPOSITIVO, cliente_api.agora_utc())
+                    threading.Thread(
+                        target=cliente_api.processar_ocorrencia, args=(buffer.tobytes(), ocorrencia), daemon=True
+                    ).start()
 
             if config.MOSTRAR_JANELA:
                 cv2.imshow("TCC - Visão Computacional na Borda", frame)

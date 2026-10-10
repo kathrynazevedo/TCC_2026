@@ -68,12 +68,14 @@ Sistema de câmera inteligente baseado em Visão Computacional que monitora cant
 └── raspberry/tcc_producao/
     ├── main.py               # loop principal: câmera → modelo → sirene + alerta
     ├── config.py             # configurações (variáveis de ambiente / .env)
-    ├── deteccao.py           # regras: classes, confiança mínima, debounce
-    ├── cliente_api.py        # envio à API, heartbeat e fila offline
-    ├── sincronizar.py        # reenvio manual dos alertas pendentes
-    ├── teste_conexao.py      # diagnóstico de rede/chave de API
+    ├── deteccao.py           # regras: classes, monta pessoas (cabeça + tronco), um alerta por pessoa e infração
+    ├── rastreador.py         # rastreamento por centroide: ID estável por pessoa entre frames
+    ├── cliente_api.py        # envio à API, heartbeat e fila offline (reenvio automático)
+    ├── teste_conexao.py      # diagnóstico de rede/chave (--infracao envia uma infração de teste)
     ├── best.tflite           # modelo treinado
-    └── tests/                # testes unitários da borda
+    ├── requirements.txt      # dependências Python
+    ├── setup.sh              # prepara a Raspberry (venv, dependências e .env)
+    └── .env.example          # modelo das variáveis de ambiente
 ```
 
 ---
@@ -85,6 +87,8 @@ Pré-requisitos: **Node.js 20+**, um banco **PostgreSQL** (o projeto usa o [Neon
 ### 1. Banco de dados
 
 Execute no banco, nesta ordem: `backend_api/db/schema.sql` e, para ter dados de demonstração, `backend_api/db/seed.sql` (cria 3 zonas, a câmera `RPI-TCC-001` com `id_dispositivo = 1` e alguns trabalhadores).
+
+> **Banco já existente?** Rode o `schema.sql` de novo antes de publicar a API nova: ele é idempotente e cria a tabela `ocorrencia` e as colunas `infracao.id_ocorrencia` / `infracao.numero_pessoa`. Os registros antigos continuam como estão.
 
 ### 2. Backend
 
@@ -121,7 +125,9 @@ nano .env                           # API_BASE_URL, EDGE_API_KEY (a mesma do bac
 .venv/bin/python main.py
 ```
 
-Se a API estiver fora do ar, os alertas ficam em `pendentes/` e são reenviados automaticamente a cada minuto (ou manualmente com `sincronizar.py`).
+Para provar também o envio de uma infração com foto (sem câmera nem modelo), rode `teste_conexao.py --infracao`. A infração de teste fica no banco; o script mostra o comando SQL para apagá-la.
+
+Se a API estiver fora do ar, os alertas ficam em `pendentes/` e são reenviados automaticamente a cada minuto.
 
 ---
 
@@ -130,8 +136,9 @@ Se a API estiver fora do ar, os alertas ficam em `pendentes/` e são reenviados 
 | Método | Rota | Quem usa | Descrição |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/health` | todos | Estado da API e do banco |
-| `POST` | `/api/violations` | Raspberry 🔑 | Registra infração (`multipart`: `image`, `id_dispositivo`, `tipo_epi_ausente`, `confidence`, `timestamp`, `severity`) |
-| `GET` | `/api/violations?limit=&status=` | dashboard | Lista infrações (mais recentes primeiro, máx. 1000) |
+| `POST` | `/api/occurrences` | Raspberry 🔑 | **Registra a cena inteira de uma captura** (`multipart`: `image` + `occurrence`, um JSON — ver abaixo) |
+| `POST` | `/api/violations` | Raspberry 🔑 | Registra uma infração isolada (formato antigo, mantido por compatibilidade; `multipart`: `image`, `id_dispositivo`, `tipo_epi_ausente`, `confidence`, `timestamp`, `severity`) |
+| `GET` | `/api/violations?limit=&status=` | dashboard | Lista infrações (mais recentes primeiro, máx. 1000). Cada uma traz também `occurrence_id`, `person_number`, `people_total` e `people` (a cena) |
 | `PATCH` | `/api/violations/:id` | dashboard | Altera status: `active` → `acknowledged` → `resolved` |
 | `GET` | `/api/metrics` | dashboard | Totais, não conformidades, taxa de segurança, câmeras |
 | `GET` | `/api/areas` | dashboard | Zonas com seus dispositivos e se estão online |
@@ -143,6 +150,33 @@ Se a API estiver fora do ar, os alertas ficam em `pendentes/` e são reenviados 
 
 Códigos de tipo de EPI: `no-helmet` (sem capacete) e `no-vest` (sem colete).
 
+### Ocorrência: a cena inteira numa única requisição
+
+Em vez de uma requisição por infração (cada uma repetindo a mesma foto), a placa envia **uma ocorrência** por captura: a foto uma vez e um JSON com todas as pessoas do frame, com ou sem EPI.
+
+```json
+{
+  "id_dispositivo": 1,
+  "timestamp": "2026-10-10T20:13:36+00:00",
+  "severity": "high",
+  "total_pessoas": 2,
+  "pessoas": [
+    { "numero": 1, "caixa": [140, 39, 400, 479],
+      "capacete": { "estado": "ok",      "confianca": 0.91, "novo": false },
+      "colete":   { "estado": "ausente", "confianca": 0.83, "novo": true } },
+    { "numero": 2, "caixa": [154, 174, 640, 479],
+      "capacete": { "estado": "ausente", "confianca": 0.87, "novo": true },
+      "colete":   { "estado": "ausente", "confianca": 0.78, "novo": true } }
+  ]
+}
+```
+
+- `numero`: posição da pessoa por ordem de chegada entre quem está em cena (a mesma numeração desenhada na foto).
+- `estado`: `ok`, `ausente` ou `desconhecido` (a parte do corpo não foi detectada; nunca vira infração).
+- `novo`: `true` só no que disparou um alerta agora. É isso que a API grava em `infracao` (uma linha por EPI novo, com `id_ocorrencia` e `numero_pessoa`); o restante fica na cena como contexto.
+- A ocorrência e suas infrações são gravadas numa **transação**: ou entra tudo, ou nada (a foto órfã é removida do Cloudinary).
+- `total_pessoas` é a contagem em cena (pode incluir quem acabou de sair do enquadramento) e nunca é menor que a lista `pessoas`.
+
 ## ⚙️ Variáveis de ambiente
 
 Veja os modelos `backend_api/.env.example`, `frontend/.env.example` e `raspberry/tcc_producao/.env.example` — todos comentados.
@@ -150,9 +184,8 @@ Veja os modelos `backend_api/.env.example`, `frontend/.env.example` e `raspberry
 ## ✅ Testes
 
 ```bash
-npm test                                                  # API: 20 testes de integração
+npm test                                                  # API: 26 testes de integração
 npm run lint                                              # frontend
-cd raspberry/tcc_producao && python -m unittest discover -s tests -v   # borda
 ```
 
 Os testes da API usam um PostgreSQL em memória e um Cloudinary simulado: não precisam de `.env`, internet nem do banco real.

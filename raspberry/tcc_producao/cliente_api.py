@@ -1,4 +1,5 @@
 """Comunicação com o backend: infrações, heartbeat e fila offline de pendências."""
+import itertools
 import json
 import threading
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ RETENTAR = "retentar"    # falha temporária (rede fora, servidor com problema):
 DESCARTAR = "descartar"  # a API recusou o conteúdo (4xx): reenviar não adianta
 
 _trava_pendentes = threading.Lock()
+_sequencia = itertools.count()  # desempata alertas salvos no mesmo instante (o relógio do Windows tem baixa resolução)
 
 
 def _cabecalhos():
@@ -23,8 +25,42 @@ def agora_utc():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _resultado(resposta):
+    """Traduz a resposta da API em OK, RETENTAR ou DESCARTAR (e explica o motivo no terminal)."""
+    if resposta.status_code == 201:
+        return OK
+    if resposta.status_code == 401:
+        print("[REDE] API recusou a chave (EDGE_API_KEY). Corrija o .env; o alerta ficará pendente.")
+        return RETENTAR
+    if resposta.status_code == 404 and "Rota não encontrada" in resposta.text:
+        # Servidor ainda sem a rota (placa atualizada antes da API): guardar, não perder o alerta.
+        print("[REDE] A API ainda não tem esta rota (servidor desatualizado?); o alerta ficará pendente.")
+        return RETENTAR
+    if resposta.status_code in (400, 404, 413, 422):
+        print(f"[REDE] API recusou o alerta ({resposta.status_code}): {resposta.text[:200]}")
+        return DESCARTAR
+    print(f"[REDE] Erro temporário da API ({resposta.status_code}): {resposta.text[:200]}")
+    return RETENTAR
+
+
+def _post(url, nome_arquivo, jpeg, **dados):
+    """POST multipart com a foto. Devolve OK, RETENTAR ou DESCARTAR."""
+    try:
+        resposta = requests.post(
+            url,
+            files={"image": (nome_arquivo, jpeg, "image/jpeg")},
+            headers=_cabecalhos(),
+            timeout=20,  # inclui o upload da imagem para o Cloudinary
+            **dados,
+        )
+    except requests.RequestException as erro:
+        print(f"[REDE] Sem conexão com a API ({erro.__class__.__name__}).")
+        return RETENTAR
+    return _resultado(resposta)
+
+
 def enviar_infracao(jpeg, tipo, confianca, timestamp):
-    """Envia uma infração. Devolve OK, RETENTAR ou DESCARTAR."""
+    """Envia uma infração isolada (formato antigo; ainda usado para reenviar pendências gravadas por ele)."""
     dados = {
         "id_dispositivo": config.ID_DISPOSITIVO,
         "tipo_epi_ausente": tipo,
@@ -32,28 +68,12 @@ def enviar_infracao(jpeg, tipo, confianca, timestamp):
         "confidence": f"{confianca:.4f}",
         "timestamp": timestamp,
     }
-    try:
-        resposta = requests.post(
-            config.URL_INFRACOES,
-            data=dados,
-            files={"image": ("infracao.jpg", jpeg, "image/jpeg")},
-            headers=_cabecalhos(),
-            timeout=20,  # inclui o upload da imagem para o Cloudinary
-        )
-    except requests.RequestException as erro:
-        print(f"[REDE] Sem conexão com a API ({erro.__class__.__name__}).")
-        return RETENTAR
+    return _post(config.URL_INFRACOES, "infracao.jpg", jpeg, data=dados)
 
-    if resposta.status_code == 201:
-        return OK
-    if resposta.status_code == 401:
-        print("[REDE] API recusou a chave (EDGE_API_KEY). Corrija o .env; o alerta ficará pendente.")
-        return RETENTAR
-    if resposta.status_code in (400, 404, 413, 422):
-        print(f"[REDE] API recusou o alerta ({resposta.status_code}): {resposta.text[:200]}")
-        return DESCARTAR
-    print(f"[REDE] Erro temporário da API ({resposta.status_code}).")
-    return RETENTAR
+
+def enviar_ocorrencia(jpeg, ocorrencia):
+    """Envia a cena inteira (foto + pessoas + EPIs) numa única requisição. Devolve OK, RETENTAR ou DESCARTAR."""
+    return _post(config.URL_OCORRENCIAS, "ocorrencia.jpg", jpeg, data={"occurrence": json.dumps(ocorrencia)})
 
 
 def enviar_heartbeat():
@@ -70,29 +90,33 @@ def enviar_heartbeat():
         return False
 
 
-def processar_alerta(jpeg, tipo, confianca):
-    """Envia o alerta; se não for possível, guarda em disco para sincronizar depois."""
-    timestamp = agora_utc()
-    resultado = enviar_infracao(jpeg, tipo, confianca, timestamp)
+def processar_ocorrencia(jpeg, ocorrencia):
+    """Envia a cena inteira; se não for possível, guarda em disco (foto + JSON) para sincronizar depois."""
+    resultado = enviar_ocorrencia(jpeg, ocorrencia)
+    novos = sum(1 for p in ocorrencia["pessoas"] for epi in ("capacete", "colete") if p[epi]["novo"])
     if resultado == OK:
-        print(f"[REDE] Alerta '{tipo}' enviado com sucesso.")
+        print(f"[REDE] Ocorrência enviada com sucesso ({len(ocorrencia['pessoas'])} pessoa(s), {novos} infração(ões) nova(s)).")
     elif resultado == RETENTAR:
-        salvar_pendente(jpeg, tipo, confianca, timestamp)
+        salvar_pendente_ocorrencia(jpeg, ocorrencia)
     return resultado
 
 
 # --------------------------------------------------------------------------
 # Fila offline
 # --------------------------------------------------------------------------
-def salvar_pendente(jpeg, tipo, confianca, timestamp):
+def _gravar_pendente(jpeg, meta):
     with _trava_pendentes:
         config.PASTA_PENDENTES.mkdir(parents=True, exist_ok=True)
-        base = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+        base = f"{datetime.now(timezone.utc):%Y%m%d_%H%M%S_%f}_{next(_sequencia):04d}"
         (config.PASTA_PENDENTES / f"{base}.jpg").write_bytes(jpeg)
-        meta = {"tipo": tipo, "confianca": confianca, "timestamp": timestamp}
         (config.PASTA_PENDENTES / f"{base}.json").write_text(json.dumps(meta), encoding="utf-8")
         _limitar_pendentes()
-    print(f"[OFFLINE] Alerta '{tipo}' guardado para envio posterior.")
+
+
+def salvar_pendente_ocorrencia(jpeg, ocorrencia):
+    """Guarda a cena inteira; o JSON da ocorrência vai junto, com o horário original da detecção."""
+    _gravar_pendente(jpeg, {"ocorrencia": ocorrencia})
+    print("[OFFLINE] Ocorrência guardada para envio posterior.")
 
 
 def _limitar_pendentes():
@@ -118,15 +142,21 @@ def sincronizar_pendentes():
             meta_arquivo = foto.with_suffix(".json")
             try:
                 meta = json.loads(meta_arquivo.read_text(encoding="utf-8"))
-                tipo, confianca, timestamp = meta["tipo"], float(meta["confianca"]), meta["timestamp"]
-            except (OSError, ValueError, KeyError):
+                if "ocorrencia" in meta:  # cena inteira
+                    if not isinstance(meta["ocorrencia"], dict):
+                        raise ValueError("ocorrencia não é um objeto")
+                    envio = (enviar_ocorrencia, (meta["ocorrencia"],))
+                else:  # infração isolada, gravada por versões anteriores
+                    envio = (enviar_infracao, (meta["tipo"], float(meta["confianca"]), meta["timestamp"]))
+            except (OSError, ValueError, KeyError, TypeError):
                 print(f"[SYNC] Metadados inválidos em {foto.name}; removendo.")
                 foto.unlink(missing_ok=True)
                 meta_arquivo.unlink(missing_ok=True)
                 restantes -= 1
                 continue
 
-            resultado = enviar_infracao(foto.read_bytes(), tipo, confianca, timestamp)
+            funcao, argumentos = envio
+            resultado = funcao(foto.read_bytes(), *argumentos)
             if resultado == RETENTAR:
                 break  # servidor fora do ar: não adianta insistir nos demais agora
             foto.unlink(missing_ok=True)

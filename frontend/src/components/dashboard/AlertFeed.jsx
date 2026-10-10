@@ -3,7 +3,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { AlertCircle, MapPin } from "lucide-react";
 import { formatDateTime } from "@/lib/format";
-import { typeLabel } from "@/lib/violationLabels";
+import { typeLabel, personLabel } from "@/lib/violationLabels";
 
 export default function AlertFeed({ violations = [], total }) {
   // A API já devolve do mais recente para o mais antigo; só garantimos a ordem.
@@ -40,6 +40,9 @@ export default function AlertFeed({ violations = [], total }) {
                 <div className="flex items-center gap-2 mt-2">
                   <MapPin className="text-slate-400 dark:text-slate-500" size={12} />
                   <span className="text-xs text-slate-600 dark:text-slate-400 font-medium">{v.zone}</span>
+                  {personLabel(v) && (
+                    <span className="text-xs text-slate-500 dark:text-slate-400">· {personLabel(v)}</span>
+                  )}
                   <Badge className="ml-auto text-[10px] h-5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-none">
                     {v.status === "active" ? "PENDENTE" : v.status === "acknowledged" ? "EM ANÁLISE" : "RESOLVIDO"}
                   </Badge>

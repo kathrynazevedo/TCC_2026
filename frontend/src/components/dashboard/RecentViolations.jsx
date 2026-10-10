@@ -1,13 +1,17 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Camera, Clock, AlertTriangle, Eye } from "lucide-react";
+import { Camera, Clock, AlertTriangle, Eye, Users } from "lucide-react";
 import EvidenceModal from "@/components/common/EvidenceModal";
 import { formatDateTime } from "@/lib/format";
+import { groupByOccurrence } from "@/lib/occurrences";
 import { typeLabel } from "@/lib/violationLabels";
 
+const MAX_BADGES = 4;
+
 export default function RecentViolations({ violations = [] }) {
-  const [selectedImage, setSelectedImage] = useState(null);
-  const recent = violations.slice(0, 6);
+  const [selected, setSelected] = useState(null);
+  // Uma captura com várias infrações é um único cartão: a foto aparece uma vez, com todas as pessoas.
+  const recent = useMemo(() => groupByOccurrence(violations).slice(0, 6), [violations]);
 
   return (
     <div className="h-full flex flex-col bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden transition-colors">
@@ -34,10 +38,10 @@ export default function RecentViolations({ violations = [] }) {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
             {recent.map((v) => (
-              <div key={v.id} className="group relative rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 overflow-hidden shadow-sm hover:shadow-md transition-all duration-300 flex flex-col justify-between">
+              <div key={v.key} className="group relative rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 overflow-hidden shadow-sm hover:shadow-md transition-all duration-300 flex flex-col justify-between">
                 <div
                   className={`relative aspect-video bg-slate-100 dark:bg-slate-900 overflow-hidden ${v.imagem_url ? "cursor-pointer" : ""}`}
-                  onClick={() => v.imagem_url && setSelectedImage(v.imagem_url)}
+                  onClick={() => v.imagem_url && setSelected(v)}
                 >
                   {v.imagem_url ? (
                     <>
@@ -61,10 +65,20 @@ export default function RecentViolations({ violations = [] }) {
                       Sem imagem
                     </div>
                   )}
-                  <div className="absolute top-2 right-2">
-                    <Badge className="bg-red-500/90 hover:bg-red-600 text-white border-none shadow-sm backdrop-blur-sm text-[10px]" variant="destructive">
-                      {typeLabel(v.type)}
-                    </Badge>
+                  <div className="absolute top-2 right-2 flex flex-col items-end gap-1">
+                    {v.items.slice(0, MAX_BADGES).map((item) => (
+                      <Badge
+                        key={item.id}
+                        className="bg-red-500/90 hover:bg-red-600 text-white border-none shadow-sm backdrop-blur-sm text-[10px]"
+                        variant="destructive"
+                      >
+                        {item.person_number ? `Pessoa ${item.person_number} · ` : ""}
+                        {typeLabel(item.type)}
+                      </Badge>
+                    ))}
+                    {v.items.length > MAX_BADGES && (
+                      <Badge className="bg-slate-800/80 text-white border-none text-[10px]">+{v.items.length - MAX_BADGES}</Badge>
+                    )}
                   </div>
                 </div>
                 <div className="p-3 bg-white dark:bg-slate-800 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
@@ -72,7 +86,15 @@ export default function RecentViolations({ violations = [] }) {
                     <Clock className="w-3.5 h-3.5 mr-1.5 text-slate-400" />
                     {formatDateTime(v.detected_at, "dd/MM/yyyy HH:mm:ss")}
                   </div>
-                  <span className="font-medium truncate ml-2">{v.zone}</span>
+                  <span className="flex items-center gap-2 font-medium truncate ml-2">
+                    {v.people_total ? (
+                      <span className="flex items-center gap-1" title="Pessoas em cena nesta captura">
+                        <Users className="w-3.5 h-3.5" />
+                        {v.people_total}
+                      </span>
+                    ) : null}
+                    <span className="truncate">{v.zone}</span>
+                  </span>
                 </div>
               </div>
             ))}
@@ -80,7 +102,12 @@ export default function RecentViolations({ violations = [] }) {
         )}
       </div>
 
-      <EvidenceModal src={selectedImage} onClose={() => setSelectedImage(null)} />
+      <EvidenceModal
+        src={selected?.imagem_url}
+        people={selected?.people}
+        peopleTotal={selected?.people_total}
+        onClose={() => setSelected(null)}
+      />
     </div>
   );
 }

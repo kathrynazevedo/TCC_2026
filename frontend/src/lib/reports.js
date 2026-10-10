@@ -1,6 +1,6 @@
 import { format } from "date-fns";
 import { formatDateTime } from "@/lib/format";
-import { typeLabel, severityConfig, statusConfig } from "@/lib/violationLabels";
+import { typeLabel, severityConfig, statusConfig, personLabel } from "@/lib/violationLabels";
 
 function download(blob, filename) {
   const url = URL.createObjectURL(blob);
@@ -24,12 +24,14 @@ const csvCell = (value) => {
 };
 
 export function buildCsv(violations) {
-  const header = ["ID", "Data/Hora", "Zona", "Tipo", "Confiança (%)", "Severidade", "Status", "Evidência (URL)"];
+  const header = ["ID", "Data/Hora", "Zona", "Tipo", "Pessoa", "Ocorrência", "Confiança (%)", "Severidade", "Status", "Evidência (URL)"];
   const rows = violations.map((v) => [
     v.id,
     formatDateTime(v.detected_at, "dd/MM/yyyy HH:mm:ss"),
     v.zone,
     typeLabel(v.type, "long"),
+    personLabel(v),
+    v.occurrence_id ?? "",
     v.confidence === null || v.confidence === undefined ? "" : Math.round(Number(v.confidence) * 100),
     (severityConfig[v.severity] || severityConfig.high).label,
     (statusConfig[v.status] || statusConfig.active).label,

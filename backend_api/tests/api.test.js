@@ -82,6 +82,7 @@ after(async () => {
 
 beforeEach(async () => {
   await pool.query('DELETE FROM infracao');
+  await pool.query('DELETE FROM ocorrencia');
   await pool.query('DELETE FROM trabalhador');
   await pool.query('DELETE FROM dispositivo_borda');
   await pool.query('DELETE FROM area');
@@ -169,6 +170,165 @@ test('POST /violations com timestamp no futuro é limitado ao horário do servid
   assert.equal(status, 201);
   const { rows } = await pool.query('SELECT timestamp_deteccao FROM infracao');
   assert.ok(new Date(rows[0].timestamp_deteccao) <= new Date());
+});
+
+// ---------- POST /api/occurrences (Raspberry Pi: a cena inteira de uma vez) ----------
+
+// A cena do print de testes: o homem de capacete sem colete e a mulher sem capacete e sem colete.
+const cena = (alteracoes = {}) => ({
+  id_dispositivo: 1,
+  timestamp: new Date(Date.now() - 1000).toISOString(),
+  severity: 'high',
+  total_pessoas: 2,
+  pessoas: [
+    {
+      numero: 1,
+      caixa: [140, 39, 400, 479],
+      capacete: { estado: 'ok', confianca: 0.91, novo: false },
+      colete: { estado: 'ausente', confianca: 0.83, novo: true },
+    },
+    {
+      numero: 2,
+      caixa: [154, 174, 640, 479],
+      capacete: { estado: 'ausente', confianca: 0.87, novo: true },
+      colete: { estado: 'ausente', confianca: 0.78, novo: true },
+    },
+  ],
+  ...alteracoes,
+});
+
+const occurrenceForm = (payload, { file = true, raw, mime = 'image/jpeg' } = {}) => {
+  const form = new FormData();
+  form.append('occurrence', raw !== undefined ? raw : JSON.stringify(payload));
+  if (file) form.append('image', new Blob([Buffer.from('fake-jpeg-bytes')], { type: mime }), 'ocorrencia.jpg');
+  return form;
+};
+
+test('POST /occurrences sem chave de API é recusado e nada é enviado ao Cloudinary', async () => {
+  const { status } = await api('POST', '/api/occurrences', { form: occurrenceForm(cena()) });
+  assert.equal(status, 401);
+  assert.equal(uploads.length, 0);
+});
+
+test('POST /occurrences grava a cena inteira: 1 foto, 1 ocorrência e uma infração por EPI novo', async () => {
+  const { status, json } = await api('POST', '/api/occurrences', { headers: AUTH, form: occurrenceForm(cena()) });
+  assert.equal(status, 201);
+  assert.equal(uploads.length, 1, 'a foto sobe uma única vez, não uma por infração');
+  assert.equal(json.data.total_pessoas, 2);
+  assert.equal(json.data.infracoes.length, 3);
+
+  const oc = await pool.query('SELECT * FROM ocorrencia');
+  assert.equal(oc.rows.length, 1);
+  assert.equal(oc.rows[0].total_pessoas, 2);
+  assert.equal(oc.rows[0].imagem_url, 'https://img.test/evidencia-1.jpg');
+  const pessoas = typeof oc.rows[0].pessoas === 'string' ? JSON.parse(oc.rows[0].pessoas) : oc.rows[0].pessoas;
+  assert.equal(pessoas.length, 2);
+  assert.equal(pessoas[0].capacete.estado, 'ok', 'a pessoa de EPI correto também fica registrada na cena');
+
+  const inf = await pool.query('SELECT * FROM infracao ORDER BY numero_pessoa, tipo_epi_ausente');
+  assert.deepEqual(
+    inf.rows.map((r) => [r.numero_pessoa, r.tipo_epi_ausente, Number(r.score_confianca)]),
+    [
+      [1, 'no-vest', 0.83],
+      [2, 'no-helmet', 0.87],
+      [2, 'no-vest', 0.78],
+    ]
+  );
+  assert.ok(inf.rows.every((r) => r.id_ocorrencia === oc.rows[0].id_ocorrencia));
+  assert.ok(inf.rows.every((r) => r.imagem_url === oc.rows[0].imagem_url && r.status_resolucao === 'active'));
+});
+
+test('GET /violations devolve a pessoa e a cena de cada infração; registros antigos vêm sem esses campos', async () => {
+  await insertViolation('no-helmet', 'active', 30); // legado, sem ocorrência
+  await api('POST', '/api/occurrences', { headers: AUTH, form: occurrenceForm(cena()) });
+
+  const { json } = await api('GET', '/api/violations');
+  assert.equal(json.data.length, 4);
+  const doNovo = json.data.filter((v) => v.occurrence_id !== null);
+  assert.equal(doNovo.length, 3);
+  assert.deepEqual(doNovo.map((v) => v.person_number).sort(), [1, 2, 2]);
+  assert.ok(doNovo.every((v) => v.people_total === 2 && v.people.length === 2));
+  assert.equal(new Set(doNovo.map((v) => v.occurrence_id)).size, 1, 'as três infrações pertencem à mesma ocorrência');
+
+  const legado = json.data.find((v) => v.occurrence_id === null);
+  assert.equal(legado.person_number, null);
+  assert.equal(legado.people, null);
+});
+
+test('PATCH de uma infração da ocorrência não altera as outras', async () => {
+  await api('POST', '/api/occurrences', { headers: AUTH, form: occurrenceForm(cena()) });
+  const { rows } = await pool.query('SELECT id_infracao FROM infracao ORDER BY id_infracao');
+  await api('PATCH', `/api/violations/${rows[0].id_infracao}`, { body: { status: 'resolved' } });
+  const { json } = await api('GET', '/api/violations');
+  assert.deepEqual(json.data.map((v) => v.status).sort(), ['active', 'active', 'resolved']);
+});
+
+test('POST /occurrences rejeita dados inválidos sem tocar no Cloudinary nem no banco', async () => {
+  const semNovo = cena();
+  semNovo.pessoas.forEach((p) => {
+    p.capacete.novo = false;
+    p.colete.novo = false;
+  });
+  const casos = [
+    ['sem imagem', occurrenceForm(cena(), { file: false }), 400],
+    ['arquivo que não é imagem', occurrenceForm(cena(), { mime: 'text/html' }), 400],
+    ['JSON quebrado', occurrenceForm(null, { raw: '{quebrado' }), 400],
+    ['sem occurrence', occurrenceForm(null, { raw: '' }), 400],
+    ['lista de pessoas vazia', occurrenceForm(cena({ pessoas: [] })), 400],
+    ['nenhum EPI ausente novo', occurrenceForm(semNovo), 400],
+    ['número de pessoa repetido', occurrenceForm(cena({ pessoas: [cena().pessoas[0], cena().pessoas[0]] })), 400],
+    ['total menor que o listado', occurrenceForm(cena({ total_pessoas: 1 })), 400],
+    ['severidade inválida', occurrenceForm(cena({ severity: 'urgentissima' })), 400],
+    ['dispositivo inválido', occurrenceForm(cena({ id_dispositivo: 'abc' })), 400],
+    ['caixa malformada', occurrenceForm(cena({ pessoas: [{ ...cena().pessoas[0], caixa: [1, 2, 3] }] })), 400],
+    [
+      'novo com EPI correto',
+      occurrenceForm(cena({ pessoas: [{ numero: 1, colete: { estado: 'ok', confianca: 0.9, novo: true } }] })),
+      400,
+    ],
+    [
+      'confiança fora do intervalo',
+      occurrenceForm(cena({ pessoas: [{ numero: 1, colete: { estado: 'ausente', confianca: 1.7, novo: true } }] })),
+      400,
+    ],
+    ['dispositivo inexistente', occurrenceForm(cena({ id_dispositivo: 99 })), 404],
+  ];
+  for (const [nome, form, esperado] of casos) {
+    const { status } = await api('POST', '/api/occurrences', { headers: AUTH, form });
+    assert.equal(status, esperado, nome);
+  }
+  assert.equal(uploads.length, 0);
+  assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM ocorrencia')).rows[0].n, 0);
+  assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM infracao')).rows[0].n, 0);
+});
+
+test('POST /occurrences, se uma infração falhar, emite ROLLBACK (nunca COMMIT) e remove a imagem', async () => {
+  // O pg-mem entrega sempre o mesmo client e ignora BEGIN/ROLLBACK, então não dá para conferir as linhas desfeitas
+  // aqui; o que se prova é o protocolo: a ocorrência e as infrações só valem juntas, numa transação.
+  const client = await pool.connect();
+  client.release();
+  const original = client.query;
+  const comandos = [];
+  client.query = (sql, ...rest) => {
+    const texto = typeof sql === 'string' ? sql : sql.text;
+    comandos.push(texto.trim().split(/\s+/).slice(0, 3).join(' ').toUpperCase());
+    if (texto.includes('INSERT INTO infracao')) return Promise.reject(new Error('banco caiu'));
+    return original.call(client, sql, ...rest);
+  };
+  try {
+    const { status } = await api('POST', '/api/occurrences', { headers: AUTH, form: occurrenceForm(cena()) });
+    assert.equal(status, 500);
+    // (a checagem do dispositivo vem antes e usa o mesmo client no pg-mem; o que importa é a transação)
+    assert.deepEqual(comandos.slice(comandos.indexOf('BEGIN')), [
+      'BEGIN',
+      'INSERT INTO OCORRENCIA',
+      'INSERT INTO INFRACAO',
+      'ROLLBACK',
+    ]);
+    assert.deepEqual(deletions, ['evidencia-1']);
+  } finally {
+    client.query = original;
+  }
 });
 
 // ---------- GET/PATCH /api/violations (dashboard) ----------

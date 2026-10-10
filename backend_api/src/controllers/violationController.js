@@ -96,10 +96,15 @@ exports.getViolations = async (req, res) => {
         COALESCE(i.status_resolucao, 'active') AS status,
         i.score_confianca AS confidence,
         i.timestamp_deteccao AS detected_at,
-        i.imagem_url
+        i.imagem_url,
+        i.id_ocorrencia AS occurrence_id,
+        i.numero_pessoa AS person_number,
+        o.total_pessoas AS people_total,
+        o.pessoas AS people
      FROM infracao i
      LEFT JOIN dispositivo_borda d ON i.id_dispositivo = d.id_dispositivo
      LEFT JOIN area a ON d.id_area = a.id_area
+     LEFT JOIN ocorrencia o ON i.id_ocorrencia = o.id_ocorrencia
      ${where}
      ORDER BY i.timestamp_deteccao DESC
      LIMIT $1`,

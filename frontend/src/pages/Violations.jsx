@@ -12,7 +12,7 @@ import { useToast } from "@/components/ui/use-toast";
 import ApiErrorNotice from "@/components/common/ApiErrorNotice";
 import EvidenceModal from "@/components/common/EvidenceModal";
 import { formatDateTime } from "@/lib/format";
-import { typeLabel, severityConfig, statusConfig } from "@/lib/violationLabels";
+import { typeLabel, severityConfig, statusConfig, personLabel } from "@/lib/violationLabels";
 
 const itemClass = "cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700 dark:focus:bg-slate-700";
 const triggerClass = "w-44 bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 dark:text-slate-200";
@@ -21,7 +21,7 @@ const headClass = "font-semibold text-slate-700 dark:text-slate-300";
 export default function Violations() {
   const [filterZone, setFilterZone] = useState("all");
   const [filterStatus, setFilterStatus] = useState("all");
-  const [selectedImage, setSelectedImage] = useState(null);
+  const [selected, setSelected] = useState(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -95,6 +95,7 @@ export default function Violations() {
                 <TableHead className={headClass}>Data/Hora</TableHead>
                 <TableHead className={headClass}>Zona</TableHead>
                 <TableHead className={headClass}>Tipo</TableHead>
+                <TableHead className={headClass}>Pessoa</TableHead>
                 <TableHead className={headClass}>Confiança</TableHead>
                 <TableHead className={headClass}>Severidade</TableHead>
                 <TableHead className={headClass}>Status</TableHead>
@@ -116,6 +117,7 @@ export default function Violations() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-sm font-medium text-slate-900 dark:text-slate-200">{typeLabel(v.type)}</TableCell>
+                    <TableCell className="text-xs text-slate-600 dark:text-slate-400 whitespace-nowrap">{personLabel(v) || "-"}</TableCell>
                     <TableCell className="font-mono text-xs text-slate-600 dark:text-slate-400">{confidence === null ? "-" : `${confidence}%`}</TableCell>
                     <TableCell>
                       <Badge className={cn("border-none text-xs", severity.color)}>{severity.label}</Badge>
@@ -126,7 +128,7 @@ export default function Violations() {
                     <TableCell className="text-right pr-4">
                       <div className="flex gap-2 justify-end">
                         <Button
-                          onClick={() => setSelectedImage(v.imagem_url)}
+                          onClick={() => setSelected(v)}
                           disabled={!v.imagem_url}
                           size="sm"
                           variant="outline"
@@ -162,7 +164,7 @@ export default function Violations() {
               })}
               {filtered.length === 0 && (
                 <TableRow>
-                  <TableCell className="text-center py-16 text-slate-500 dark:text-slate-400" colSpan={7}>
+                  <TableCell className="text-center py-16 text-slate-500 dark:text-slate-400" colSpan={8}>
                     <div className="w-16 h-16 bg-blue-50 dark:bg-blue-900/20 rounded-full flex items-center justify-center mx-auto mb-4">
                       <AlertTriangle className="w-8 h-8 text-blue-400 dark:text-blue-500" />
                     </div>
@@ -176,7 +178,13 @@ export default function Violations() {
         </div>
       </div>
 
-      <EvidenceModal src={selectedImage} onClose={() => setSelectedImage(null)} />
+      <EvidenceModal
+        src={selected?.imagem_url}
+        people={selected?.people}
+        peopleTotal={selected?.people_total}
+        highlight={selected?.person_number}
+        onClose={() => setSelected(null)}
+      />
     </div>
   );
 }

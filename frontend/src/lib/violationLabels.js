@@ -9,6 +9,19 @@ const UNKNOWN_TYPE = { short: "Ausência de EPI", alert: "Falta de EPI", long: "
 /** kind: "short" | "alert" | "long" */
 export const typeLabel = (type, kind = "short") => (TYPES[type] || UNKNOWN_TYPE)[kind];
 
+/** "Pessoa 2 de 3" quando a infração veio de uma ocorrência (cena completa); "" nos registros antigos. */
+export const personLabel = (v) => {
+  if (v?.person_number === null || v?.person_number === undefined) return "";
+  return v.people_total ? `Pessoa ${v.person_number} de ${v.people_total}` : `Pessoa ${v.person_number}`;
+};
+
+/** Estado de um EPI de uma pessoa na cena, como a placa o enviou. */
+export const epiStateConfig = {
+  ok: { label: "OK", color: "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400" },
+  ausente: { label: "Ausente", color: "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400" },
+  desconhecido: { label: "Não detectado", color: "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400" },
+};
+
 export const severityConfig = {
   low: { label: "Baixa", pdf: "BAIXA", color: "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300" },
   medium: { label: "Média", pdf: "MÉDIA", color: "bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400" },

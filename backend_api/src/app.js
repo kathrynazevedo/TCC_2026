@@ -9,6 +9,7 @@ const { notFound, errorHandler } = require('./middlewares/errorHandler');
 
 const systemRoutes = require('./routes/systemRoutes');
 const violationRoutes = require('./routes/violationRoutes');
+const occurrenceRoutes = require('./routes/occurrenceRoutes');
 const metricsRoutes = require('./routes/metricsRoutes');
 const areaRoutes = require('./routes/areaRoutes');
 const workersRoutes = require('./routes/workersRoutes');
@@ -41,6 +42,7 @@ function createApp() {
 
   app.use('/api/status', systemRoutes);
   app.use('/api/violations', violationRoutes);
+  app.use('/api/occurrences', occurrenceRoutes);
   app.use('/api/metrics', metricsRoutes);
   app.use('/api/areas', areaRoutes);
   app.use('/api/workers', workersRoutes);

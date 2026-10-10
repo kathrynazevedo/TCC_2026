@@ -54,12 +54,120 @@ function parseTimestamp(value) {
   return date > new Date() ? new Date() : date;
 }
 
+// ---------- ocorrência (cena inteira enviada pela placa) ----------
+
+const EPI_STATES = ['ok', 'ausente', 'desconhecido'];
+const MAX_PEOPLE = 50;
+// Chave do JSON da placa -> código canônico da infração.
+const EPI_KEYS = { capacete: 'no-helmet', colete: 'no-vest' };
+
+function parseBox(value, label) {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || value.length !== 4 || !value.every((n) => Number.isFinite(n))) {
+    throw new HttpError(400, `${label} deve ser [x1, y1, x2, y2].`);
+  }
+  return value.map((n) => Math.round(n));
+}
+
+// { estado, confianca, novo } de um EPI de uma pessoa. Ausente do JSON = "desconhecido" (não detectado).
+function parseEpiState(value, label) {
+  if (value === undefined || value === null) return { estado: 'desconhecido', confianca: null, novo: false };
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new HttpError(400, `${label} inválido.`);
+  }
+  if (!EPI_STATES.includes(value.estado)) {
+    throw new HttpError(400, `${label}.estado inválido. Use: ${EPI_STATES.join(', ')}.`);
+  }
+  const confianca =
+    value.confianca === undefined || value.confianca === null ? null : parseConfidence(value.confianca);
+  const novo = value.novo === true;
+  if (novo && (value.estado !== 'ausente' || confianca === null)) {
+    throw new HttpError(400, `${label}: "novo" exige estado "ausente" e confianca.`);
+  }
+  return { estado: value.estado, confianca, novo };
+}
+
+/**
+ * Valida a ocorrência enviada pela placa (campo "occurrence" do multipart, em JSON) e a normaliza:
+ *   { id_dispositivo, timestamp, severity, total_pessoas, pessoas: [{ numero, caixa, capacete, colete }] }
+ * Devolve também `infracoes`: o que deve virar registro em "infracao" (EPI "ausente" marcado como "novo").
+ */
+function parseOccurrence(raw) {
+  let data = raw;
+  if (typeof raw === 'string') {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      throw new HttpError(400, 'occurrence não é um JSON válido.');
+    }
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new HttpError(400, 'occurrence é obrigatório (JSON com a cena detectada).');
+  }
+
+  const idDispositivo = parseId(data.id_dispositivo, 'id_dispositivo');
+  const severity = data.severity || 'high';
+  if (!SEVERITIES.includes(severity)) {
+    throw new HttpError(400, `severity inválida. Use: ${SEVERITIES.join(', ')}.`);
+  }
+
+  if (!Array.isArray(data.pessoas) || data.pessoas.length === 0 || data.pessoas.length > MAX_PEOPLE) {
+    throw new HttpError(400, `pessoas deve ser uma lista de 1 a ${MAX_PEOPLE} itens.`);
+  }
+
+  const seen = new Set();
+  const pessoas = [];
+  const infracoes = [];
+  for (const [index, item] of data.pessoas.entries()) {
+    const label = `pessoas[${index}]`;
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new HttpError(400, `${label} inválido.`);
+    }
+    const numero = parseId(item.numero, `${label}.numero`);
+    if (seen.has(numero)) {
+      throw new HttpError(400, `${label}.numero repetido (${numero}).`);
+    }
+    seen.add(numero);
+
+    const pessoa = { numero, caixa: parseBox(item.caixa, `${label}.caixa`) };
+    for (const [key, tipo] of Object.entries(EPI_KEYS)) {
+      const epi = parseEpiState(item[key], `${label}.${key}`);
+      pessoa[key] = epi;
+      if (epi.novo) infracoes.push({ tipo, numero, confianca: epi.confianca });
+    }
+    pessoas.push(pessoa);
+  }
+
+  if (infracoes.length === 0) {
+    throw new HttpError(400, 'A ocorrência não traz nenhum EPI ausente marcado como novo.');
+  }
+
+  const total =
+    data.total_pessoas === undefined || data.total_pessoas === null
+      ? pessoas.length
+      : parseId(data.total_pessoas, 'total_pessoas');
+  if (total < pessoas.length) {
+    throw new HttpError(400, 'total_pessoas não pode ser menor que a quantidade de pessoas listadas.');
+  }
+
+  return {
+    id_dispositivo: idDispositivo,
+    timestamp: parseTimestamp(data.timestamp),
+    severity,
+    total_pessoas: total,
+    pessoas,
+    infracoes,
+  };
+}
+
 module.exports = {
   SEVERITIES,
   STATUSES,
+  EPI_STATES,
   normalizeEpiType,
   isKnownEpiType,
   parseId,
   parseConfidence,
   parseTimestamp,
+  parseOccurrence,
 };
