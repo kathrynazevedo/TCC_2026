@@ -168,11 +168,35 @@ exports.deleteViolations = async (req, res) => {
 
   const placeholders = uniqueIds.map((_, index) => `$${index + 1}`).join(', ');
   const result = await db.query(
-    `DELETE FROM infracao WHERE id_infracao IN (${placeholders}) RETURNING id_infracao, imagem_url`,
+    `DELETE FROM infracao WHERE id_infracao IN (${placeholders}) RETURNING id_infracao, imagem_url, id_ocorrencia`,
     uniqueIds
   );
 
-  await imageStorage.deleteEvidencesByUrl(result.rows.map((row) => row.imagem_url).filter(Boolean));
+  // Uma captura gera várias infrações (uma por pessoa) que dividem a MESMA foto, e a própria ocorrência também a
+  // referencia. Por isso a foto só sai do Cloudinary quando nenhuma infração restante a usa, e a ocorrência que
+  // ficou sem infrações é removida junto.
+  const ocorrencias = [...new Set(result.rows.map((row) => row.id_ocorrencia).filter((id) => id != null))];
+  if (ocorrencias.length > 0) {
+    const marcas = ocorrencias.map((_, index) => `$${index + 1}`).join(', ');
+    await db.query(
+      `DELETE FROM ocorrencia
+        WHERE id_ocorrencia IN (${marcas})
+          AND id_ocorrencia NOT IN (SELECT id_ocorrencia FROM infracao WHERE id_ocorrencia IS NOT NULL)`,
+      ocorrencias
+    );
+  }
+
+  let imagensParaApagar = [...new Set(result.rows.map((row) => row.imagem_url).filter(Boolean))];
+  if (imagensParaApagar.length > 0) {
+    const marcas = imagensParaApagar.map((_, index) => `$${index + 1}`).join(', ');
+    const emUso = await db.query(
+      `SELECT DISTINCT imagem_url FROM infracao WHERE imagem_url IN (${marcas})`,
+      imagensParaApagar
+    );
+    const usadas = new Set(emUso.rows.map((row) => row.imagem_url));
+    imagensParaApagar = imagensParaApagar.filter((url) => !usadas.has(url));
+  }
+  await imageStorage.deleteEvidencesByUrl(imagensParaApagar);
 
   res.status(200).json({
     message: 'Infrações excluídas com sucesso',

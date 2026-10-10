@@ -387,11 +387,13 @@ test('POST /occurrences, se uma infração falhar, emite ROLLBACK (nunca COMMIT)
 
 // ---------- GET/PATCH /api/violations (dashboard) ----------
 
+// Cada registro de teste tem a sua foto: duas infrações com a mesma URL só existem quando vêm da mesma captura.
+let fotoSeq = 0;
 const insertViolation = (tipo, status, minutosAtras = 0) =>
   pool.query(
     `INSERT INTO infracao (id_dispositivo, tipo_epi_ausente, score_confianca, timestamp_deteccao, imagem_url, status_resolucao, severidade)
-     VALUES (1, $1, 0.9, $2, 'https://img.test/x.jpg', $3, 'high')`,
-    [tipo, new Date(Date.now() - minutosAtras * 60000), status]
+     VALUES (1, $1, 0.9, $2, $4, $3, 'high')`,
+    [tipo, new Date(Date.now() - minutosAtras * 60000), status, `https://img.test/x-${++fotoSeq}.jpg`]
   );
 
 test('GET /violations devolve mais recentes primeiro, com zona e tipo normalizado', async () => {
@@ -452,6 +454,35 @@ test('DELETE /violations exclui só as selecionadas, com a senha, e remove as im
 
   // a tela de violações deixa de listar as excluídas
   assert.equal((await api('GET', '/api/violations')).json.data.length, 1);
+});
+
+test('DELETE /violations: a foto compartilhada pela captura só some quando a última infração sai', async () => {
+  await api('POST', '/api/occurrences', { headers: AUTH, form: occurrenceForm(cena()) }); // 2 infrações, 1 foto
+  const { rows } = await pool.query('SELECT id_infracao FROM infracao ORDER BY id_infracao');
+  const [primeira, segunda] = rows.map((r) => r.id_infracao);
+  const password = 'senha-de-teste';
+
+  const parcial = await api('DELETE', '/api/violations', { body: { ids: [primeira], password } });
+  assert.equal(parcial.status, 200);
+  assert.deepEqual(removedUrls, [], 'a outra infração ainda usa a foto: ela não pode ser apagada');
+  assert.equal((await pool.query('SELECT 1 FROM ocorrencia')).rows.length, 1, 'a captura continua existindo');
+  const { json } = await api('GET', '/api/violations');
+  assert.equal(json.data.length, 1);
+  assert.equal(json.data[0].people.length, 2, 'a cena segue completa para a infração que ficou');
+
+  await api('DELETE', '/api/violations', { body: { ids: [segunda], password } });
+  assert.deepEqual(removedUrls, ['https://img.test/evidencia-1.jpg']);
+  assert.equal((await pool.query('SELECT 1 FROM ocorrencia')).rows.length, 0, 'sem infrações, a captura sai junto');
+});
+
+test('DELETE /violations: excluir as duas infrações da mesma captura de uma vez apaga a foto uma única vez', async () => {
+  await api('POST', '/api/occurrences', { headers: AUTH, form: occurrenceForm(cena()) });
+  const { rows } = await pool.query('SELECT id_infracao FROM infracao');
+  await api('DELETE', '/api/violations', {
+    body: { ids: rows.map((r) => r.id_infracao), password: 'senha-de-teste' },
+  });
+  assert.deepEqual(removedUrls, ['https://img.test/evidencia-1.jpg']);
+  assert.equal((await pool.query('SELECT 1 FROM ocorrencia')).rows.length, 0);
 });
 
 test('DELETE /violations com senha errada ou ausente é recusado e nada é apagado', async () => {

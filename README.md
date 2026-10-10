@@ -189,7 +189,7 @@ Veja os modelos `backend_api/.env.example`, `frontend/.env.example` e `raspberry
 ## ✅ Testes
 
 ```bash
-npm test                                                  # API: 33 testes de integração
+npm test                                                  # API: 35 testes de integração
 (cd raspberry/tcc_producao && python -m unittest discover -s tests)   # placa: 40 testes (sem câmera nem modelo)
 npm run lint                                              # frontend
 ```
