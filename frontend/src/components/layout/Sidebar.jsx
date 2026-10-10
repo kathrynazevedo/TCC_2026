@@ -18,9 +18,12 @@ export default function Sidebar({ isCollapsed, setIsCollapsed }) {
           type="button"
           onClick={() => setIsCollapsed(!isCollapsed)}
           aria-label={isCollapsed ? "Expandir menu" : "Recolher menu"}
-          className="absolute -right-3 top-[22px] z-50 hidden h-6 w-6 items-center justify-center border border-sidebar-border bg-signal text-signal-foreground transition-transform hover:scale-110 lg:flex"
+          title={isCollapsed ? "Expandir menu" : "Recolher menu"}
+          // Fica na emenda entre o menu escuro e a página (clara ou escura): contorno escuro + cor de sinal
+          // garantem contraste nos dois lados.
+          className="absolute -right-3.5 top-[18px] z-50 hidden h-7 w-7 items-center justify-center border-2 border-sidebar bg-signal text-signal-foreground shadow-[0_0_0_1px_hsl(var(--signal)),0_4px_12px_rgba(0,0,0,0.45)] transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white lg:flex"
         >
-          {isCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+          {isCollapsed ? <ChevronRight size={16} strokeWidth={3} /> : <ChevronLeft size={16} strokeWidth={3} />}
         </button>
       )}
 
