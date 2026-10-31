@@ -251,12 +251,25 @@ def linhas_janela(resumo):
 
 
 class RegistroCsv:
-    """Uma linha por intervalo, para montar a tabela do TCC depois (abre direto no Excel)."""
+    """Uma linha por intervalo: o registro local das medições, com data e hora (abre direto no Excel).
 
-    def __init__(self, caminho):
+    É a evidência auditável dos números mostrados no painel. Para não encher o cartão SD numa operação contínua, o
+    arquivo é rodado ao passar de `limite_bytes`: o cheio vira "<nome>.csv.1" (substituindo o anterior) e um novo começa.
+    """
+
+    def __init__(self, caminho, limite_bytes=5_000_000):
         self.caminho = Path(caminho)
+        self.limite_bytes = limite_bytes
+
+    def _rodar_se_cheio(self):
+        try:
+            if self.caminho.exists() and self.caminho.stat().st_size >= self.limite_bytes:
+                self.caminho.replace(self.caminho.with_name(self.caminho.name + ".1"))
+        except OSError:
+            pass
 
     def gravar(self, resumo, registro, throttled, agora_utc):
+        self._rodar_se_cheio()
         novo = not self.caminho.exists() or self.caminho.stat().st_size == 0
         reinicios, quedas = registro.reinicios(8)
         linha = [

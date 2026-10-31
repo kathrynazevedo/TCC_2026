@@ -66,18 +66,24 @@ Sistema de câmera inteligente baseado em Visão Computacional que monitora cant
 │       ├── components/       # layout, dashboard, common e ui (shadcn)
 │       └── lib/              # formatação, rótulos, geração de relatórios (PDF/CSV/ZIP)
 └── raspberry/tcc_producao/
-    ├── main.py               # loop principal: câmera → modelo → sirene + alerta
-    ├── reinicio.py           # reinício programado do turno (programa ou placa)
-    ├── sirene.py             # relé da sirene no GPIO (pino físico, nível configurável); simulada fora da Raspberry
-    ├── testar_sirene.py      # teste de bancada: repouso → sirene → repouso, com o pino do .env
+    ├── main.py               # laço principal: câmera → modelo → regras → sirene + alerta + métricas
     ├── config.py             # configurações (variáveis de ambiente / .env)
     ├── deteccao.py           # regras: acha o EPI dentro da caixa de cada pessoa; falta contínua = um alerta por pessoa e infração
     ├── rastreador.py         # rastreamento por centroide: ID estável por pessoa entre frames
-    ├── cliente_api.py        # envio à API, heartbeat e fila offline (reenvio automático)
-    ├── teste_conexao.py      # diagnóstico de rede/chave (--infracao envia uma infração de teste)
-    ├── modelo_pessoa_epi.tflite  # modelo treinado (3 classes: pessoa, capacete, colete)
+    ├── cliente_api.py        # envio à API, heartbeat (com telemetria) e fila offline (reenvio automático)
+    ├── sirene.py             # relé da sirene no GPIO (pino físico, nível configurável); simulada fora da Raspberry
+    ├── metricas.py           # métricas, telemetria, confiança por classe, carga de cena, registro de reinícios e CSV
+    ├── reinicio.py           # reinício programado do turno (programa ou placa)
+    ├── teste_conexao.py      # diagnóstico de rede/chave (--infracao envia uma ocorrência de teste)
+    ├── testar_sirene.py      # teste de bancada do relé
+    ├── testar_modelo.py      # confere um modelo (--so-classes) ou o roda na câmera/vídeo com a regra do sistema
+    ├── modelo_pessoa_epi.tflite   # modelo treinado (3 classes: capacete, colete, pessoa)
+    ├── validacao_modelo.json # mAP por classe do modelo, mostrado na tela Sistema
+    ├── tests/                # testes da placa (sem câmera, modelo nem GPIO)
     ├── requirements.txt      # dependências Python
-    ├── setup.sh              # prepara a Raspberry (venv, dependências e .env)
+    ├── setup.sh              # prepara a Raspberry do zero (venv, dependências e .env)
+    ├── instalar_servico.sh   # instala o serviço systemd (sobe ao ligar a placa, volta se cair)
+    ├── tcc-epi.service.modelo # modelo do serviço, preenchido pelo instalar_servico.sh
     └── .env.example          # modelo das variáveis de ambiente
 ```
 
@@ -126,33 +132,70 @@ Em produção defina `NODE_ENV=production` (exige `EDGE_API_KEY` e recomenda `CO
 
 ### 5. Raspberry Pi
 
+**Primeira instalação** (placa nova):
+
 ```bash
 cd raspberry/tcc_producao
-./setup.sh                          # cria o .venv, instala as dependências e gera o .env
+bash setup.sh                       # cria o .venv, instala as dependências e gera o .env
 nano .env                           # API_BASE_URL, EDGE_API_KEY (a mesma do backend), CAMERA_SOURCE...
 .venv/bin/python teste_conexao.py   # confere rede, API e chave
-.venv/bin/python main.py
+.venv/bin/python testar_sirene.py   # confere o relé de ouvido
+bash instalar_servico.sh            # o programa passa a subir sozinho ao ligar a placa
 ```
 
-Para provar também o envio de uma infração com foto (sem câmera nem modelo), rode `teste_conexao.py --infracao`. A infração de teste fica no banco; o script mostra o comando SQL para apagá-la.
+Se a placa já tem as dependências no Python do sistema (é o caso da placa do projeto), pule o `setup.sh` e use `python3` no lugar de `.venv/bin/python`; o `instalar_servico.sh` escolhe o Python certo sozinho.
 
-Se a API estiver fora do ar, os alertas ficam em `pendentes/` e são reenviados automaticamente a cada minuto.
+**Como serviço** (`instalar_servico.sh`, usa o `systemd`): o programa sobe ao ligar a placa e volta em 5 s se cair. Se o problema for de configuração (modelo ausente ou sem as 3 classes, saída 2), ele **não** fica reiniciando em laço.
 
-**O modelo (`modelo_pessoa_epi.tflite`, ou o caminho em `MODELO_PATH`) tem 3 classes: `person`, `helmet` e `vest`** (os nomes são reconhecidos em português e inglês, ver `deteccao.py`). Não existe classe "sem capacete": a infração é a **ausência** do EPI dentro da caixa de uma pessoa. Por isso:
+```bash
+journalctl -u tcc-epi -f            # o que o programa escreve (alertas, métricas, erros)
+sudo systemctl stop tcc-epi         # para antes de testar na mão: libera a câmera e a sirene
+sudo systemctl start tcc-epi
+bash instalar_servico.sh --remover  # desinstala o serviço
+```
 
-- **Um modelo sem as três classes é recusado na partida** (ex.: o antigo, com `Sem_Capacete`), em vez de rodar mudo.
+**Ferramentas** (rodam na placa ou no PC; nenhuma altera o sistema em operação):
+
+| Arquivo | Para quê |
+|---|---|
+| `teste_conexao.py` | Confere rede, chave e heartbeat. Com `--infracao` envia uma ocorrência de teste (uma pessoa sem capacete **e** sem colete, com foto) e mostra o SQL para apagá-la do banco. |
+| `testar_sirene.py` | Teste de bancada do relé: repouso → sirene → repouso, com o pino e o nível do `.env`. |
+| `testar_modelo.py` | `--so-classes` confere se um modelo serve ao sistema; sem opções roda o modelo na câmera ou num vídeo (`--fonte`) com a mesma regra de alerta, sem enviar nada nem tocar a sirene. |
+
+**Atualizar a placa** depois de mudar código ou modelo (no PC; o pacote não leva o `.env`, a fila `pendentes/` nem o estado, que a placa mantém):
+
+```bat
+cd raspberry\tcc_producao
+tar -czf placa.tgz --exclude=__pycache__ --exclude=.env --exclude=pendentes --exclude=estado_execucao.json --exclude=metricas.csv* --exclude=*.tgz .
+scp placa.tgz pi@pi-tcc.local:~/
+```
+
+```bash
+tar -xzf ~/placa.tgz -C ~/tcc_producao && rm ~/placa.tgz
+sudo systemctl restart tcc-epi      # se estiver instalada como serviço
+```
+
+Arquivos que saíram do projeto continuam na placa até serem apagados à mão.
+
+Se a API estiver fora do ar, os alertas ficam em `pendentes/` (no máximo `MAX_PENDENTES`) e são reenviados automaticamente a cada minuto.
+
+**O modelo (`modelo_pessoa_epi.tflite`, ou o caminho em `MODELO_PATH`) tem 3 classes: `capacete`, `colete` e `pessoa`** (os nomes são reconhecidos em português e inglês, ver `deteccao.py`). Não existe classe "sem capacete": a infração é a **ausência** do EPI dentro da caixa de uma pessoa. Por isso:
+
+- **Um modelo sem as três classes é recusado na partida**, em vez de rodar mudo.
 - **A falta precisa durar `TEMPO_CONFIRMACAO` segundos (padrão 1,0 s) sem interrupção** antes de alertar: um capacete que o modelo deixa de ver por um quadro não é alarme.
-- **Capacete e colete entram com limiar baixo** (`CONFIANCA_EPI=0.35`): é melhor aceitar um EPI duvidoso como presente do que acusar quem está equipado.
+- **Limiares de confiança** (no `.env`): pessoa **0,65**, capacete **0,50**, colete **0,65**. Nos testes, as pessoas reais vieram com 0,74 a 0,83 e as duvidosas (que apareciam e sumiam) com 0,53 a 0,56. Limiar baixo demais aceita um EPI falso (um "colete" a 53% sobre uma camiseta) e esconde a falta; alto demais recusa um EPI real visto com pouca certeza e acusa quem está equipado. **`CONFIANCA_PESSOA` nunca abaixo de 0,50:** o banco recusa infração com confiança menor.
 - **Quem não dá para julgar não é acusado:** pessoa menor que `ALTURA_MINIMA_PESSOA` (120 px) ou com a cabeça cortada pela borda de cima do quadro fica como `desconhecido`.
 - Na ocorrência enviada à API, a `confianca` de um EPI `ausente` é a da **pessoa** detectada (não há detecção de capacete para medir).
 
-**Sirene:** o relé fica no **pino físico 11** (numeração BOARD, o mesmo do teste de bancada) e toca por `DURACAO_SIRENE` segundos (padrão 2) a cada alerta novo; novos alertas durante o toque são ignorados. O relé liga em nível **baixo** por padrão e repousa em alto (o pino já nasce em repouso, sem pulso ao ligar o programa). Se a sua sirene tocar ao contrário, ajuste `SIRENE_ATIVA_EM=alto` no `.env`. Confira de ouvido com `python3 testar_sirene.py`.
+**Sirene:** o relé fica no **pino físico 11** (numeração BOARD, o mesmo do teste de bancada) e toca por `DURACAO_SIRENE` segundos (padrão 2) a cada alerta novo; novos alertas durante o toque são ignorados. O relé liga em nível **baixo** por padrão e repousa em alto (o pino já nasce em repouso, sem pulso ao ligar o programa). Se a sua sirene tocar ao contrário, ajuste `SIRENE_ATIVA_EM=alto` no `.env`.
 
-> **Sirene que liga ao terminar o programa?** Ao fim de um processo a biblioteca de GPIO pode soltar o pino (entrada flutuante), e alguns módulos de relé entendem isso como "ligar". O programa mantém o pino em repouso enquanto roda e não chama `GPIO.cleanup()` ao sair, mas se a sirene ainda ligar depois do fim do programa a correção é elétrica: um resistor de pull-up (cerca de 10 kΩ) entre o pino do relé e 3,3 V (módulo que liga em nível baixo) ou pull-down para o GND (módulo que liga em nível alto). Rodar o programa como serviço `systemd` com `Restart=always` também mantém o pino sempre segurado.
+> **Sirene que liga ao terminar o programa?** Ao fim de um processo a biblioteca de GPIO pode soltar o pino (entrada flutuante), e alguns módulos de relé entendem isso como "ligar". O programa mantém o pino em repouso enquanto roda e não chama `GPIO.cleanup()` ao sair, mas se a sirene ainda ligar depois do fim do programa a correção é elétrica: um resistor de pull-up (cerca de 10 kΩ) entre o pino do relé e 3,3 V (módulo que liga em nível baixo) ou pull-down para o GND (módulo que liga em nível alto). Com o serviço instalado o programa fica sempre rodando, o que também mantém o pino segurado.
 
-**Reinício programado do turno:** depois de `REINICIAR_APOS_HORAS` horas de operação (padrão **8**; `0` desliga) o programa reinicia sozinho, esperando um momento sem ninguém em cena (no máximo `REINICIO_TOLERANCIA_S`, padrão 600 s). `REINICIO_MODO=programa` (padrão) reabre só o `main.py`; `REINICIO_MODO=placa` faz `sudo reboot` e só vale se o programa sobe sozinho no boot (serviço `systemd`). O reinício programado não conta como queda: a tela Sistema mostra "Reinícios em 8 h" separando as quedas inesperadas dos programados, e a contagem regressiva até o próximo.
+**Reinício programado do turno:** depois de `REINICIAR_APOS_HORAS` horas de operação (padrão **8**; `0` desliga) o programa reinicia sozinho, esperando um momento sem ninguém em cena (no máximo `REINICIO_TOLERANCIA_S`, padrão 600 s) e terminando antes os envios em andamento. `REINICIO_MODO=programa` (padrão) reabre só o `main.py`; `REINICIO_MODO=placa` faz `sudo reboot` e só vale com o serviço instalado (para o programa subir no boot). O reinício programado não conta como queda: a tela Sistema mostra "Reinícios em 8 h" separando as quedas inesperadas dos programados, e a contagem regressiva até o próximo.
 
-**Validação do modelo (mAP por classe) na tela Sistema:** depois de treinar, rode no Colab a célula abaixo e copie o `validacao_modelo.json` gerado para a pasta do programa na placa (`~/tcc_producao`). A placa o envia no heartbeat e a tela Sistema mostra a tabela. Sem o arquivo, a tabela fica vazia (nenhum valor é inventado).
+**Câmera de rede:** em câmera RTSP/HTTP a abertura e a leitura têm prazo de 10 s. Uma queda de rede ou de Wi-Fi faz a leitura falhar e o programa reconecta sozinho (`[VÍDEO] Perda de sinal... Reconectando`), em vez de ficar parado sem avisar.
+
+**Validação do modelo (mAP por classe) na tela Sistema:** depois de treinar, rode no Colab a célula abaixo e copie o `validacao_modelo.json` gerado para a pasta do programa na placa. A placa o envia no heartbeat e a tela Sistema mostra a tabela. Sem o arquivo, a tabela fica vazia (nenhum valor é inventado). O arquivo do projeto traz os valores do modelo final (43 épocas, conjunto de validação).
 
 ```python
 import json
@@ -168,30 +211,28 @@ json.dump({"modelo": "modelo_pessoa_epi.tflite", "conjunto": "test", "imagens": 
           open('/content/validacao_modelo.json', 'w'), ensure_ascii=False, indent=1)
 ```
 
-
-Os limiares podem ser ajustados no `.env` (ver `.env.example`); revalide-os sempre que trocar o modelo.
-
 #### Métricas de desempenho e estabilidade
 
-Com o `main.py` rodando, a cada `INTERVALO_METRICAS` segundos (padrão 10) o terminal mostra duas linhas e o mesmo dado é anexado a `metricas.csv` (separador `;`, abre direto no Excel):
+O mesmo conjunto de números aparece em três lugares: no terminal (ou no `journalctl` do serviço), na **tela Sistema** do painel (via heartbeat) e, a cada `INTERVALO_METRICAS` segundos (padrão 10), numa linha do `metricas.csv` (separador `;`, abre direto no Excel). O CSV é o registro local com data e hora das medições; ao passar de 5 MB vira `metricas.csv.1` e um novo começa, para não encher o cartão SD.
 
 ```
 [MÉTRICAS 10s] pré 4.5 ms | inferência 60.0 ms | pós 1.5 ms | total 66 ms (p95 67) | 5.9 FPS (mín. 5.4) | borda→decisão 53 ms
 [SISTEMA] CPU 58 °C (máx. 61) | limitação 0x0 | ligado há 2h10 | execução nº 1 | reinícios em 8 h: 0 (0 queda(s)) | sirene 73 ms | API 277 ms
 ```
 
-| Linha da tabela do TCC | Onde sai |
+| Métrica | Onde sai |
 |---|---|
 | Pré-processamento / Inferência / Pós-processamento (NMS) | `pré`, `inferência`, `pós` (médias do intervalo; `p95` e pior caso no CSV) |
 | Tempo total por quadro | `total` (redimensionamento + pré + inferência + pós + regras) |
 | FPS sustentada | `FPS` (média do intervalo) e `mín.` (pior intervalo, sem contar o aquecimento) |
 | Latência ponta a ponta (borda → alerta) | `borda→decisão`, `sirene` e `API`, contados desde a captura do quadro (a sirene e o envio só aparecem quando houve alerta) |
 | Temperatura em operação contínua | `CPU` e `máx.` (lidos de `/sys/class/thermal`; `limitação` vem de `vcgencmd get_throttled`, `0x0` = sem limitação) |
-| Estabilidade (8 h / reinícios) | `reinícios em 8 h` e `queda(s)`, a partir de `estado_execucao.json` |
+| Estabilidade (reinícios) | `reinícios em 8 h` e `queda(s)`, a partir de `estado_execucao.json` |
+| Confiança por classe e desempenho por carga de cena | só na tela Sistema (acumulados durante a execução) |
 
-Ao encerrar (Ctrl+C) o programa imprime um `[RESUMO]` com os valores de toda a execução. Com `MOSTRAR_JANELA=true` as mesmas métricas aparecem numa faixa na janela de vídeo. `INTERVALO_METRICAS=0` desliga tudo isso.
+Ao encerrar (Ctrl+C ou `systemctl stop`) o programa imprime um `[RESUMO]` com os valores de toda a execução. Com `MOSTRAR_JANELA=true` (só para depuração, com monitor) as métricas também aparecem numa faixa na janela de vídeo.
 
-Limites: o contador só enxerga um reinício **quando o programa volta a subir**, e uma queda de energia é reconhecida pelo estado "não encerrado" da execução anterior. O repositório não traz reinício automático: para operar 8 h sem supervisão, rode o `main.py` como serviço `systemd` com `Restart=on-failure`. Temperatura e limitação só existem na Raspberry (no PC aparecem como `-`). O dashboard acrescenta até 5 s à latência percebida (consulta periódica); isso não entra nesta medição da borda.
+Limites: o contador só enxerga um reinício **quando o programa volta a subir**, e uma queda de energia é reconhecida pelo estado "não encerrado" da execução anterior. Temperatura e limitação só existem na Raspberry (no PC aparecem como `-`). O dashboard acrescenta até 5 s à latência percebida (consulta periódica); isso não entra nesta medição da borda.
 
 ---
 
@@ -254,7 +295,7 @@ Veja os modelos `backend_api/.env.example`, `frontend/.env.example` e `raspberry
 
 ```bash
 npm test                                                  # API: 42 testes de integração
-(cd raspberry/tcc_producao && python -m unittest discover -s tests)   # placa: 102 testes (sem câmera, modelo nem GPIO)
+(cd raspberry/tcc_producao && python -m unittest discover -s tests)   # placa: 119 testes (sem câmera, modelo nem GPIO)
 npm run lint                                              # frontend
 ```
 

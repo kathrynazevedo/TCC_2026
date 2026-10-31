@@ -47,5 +47,5 @@ raspberry/**/*.tgz
 
 # Worktrees locais do Claude Code
 .claude/worktrees/
-# Modelos provisórios (cópias de checkpoints do treino); o modelo em uso é o modelo_pessoa_epi.tflite
-raspberry/**/best_epoca*.tflite
+# Arquivos temporários que o lgpio cria na pasta de trabalho da placa
+raspberry/**/.lgd-*

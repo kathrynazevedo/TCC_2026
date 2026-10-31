@@ -1,4 +1,8 @@
-"""Monitoramento de EPIs na borda (Raspberry Pi): câmera -> YOLO -> sirene + alerta para a API."""
+"""Monitoramento de EPIs na borda (Raspberry Pi): câmera -> YOLO -> sirene + alerta para a API.
+
+Código de saída: 0 = encerrado normalmente; 2 = configuração inválida (modelo ausente ou sem as 3 classes), caso em
+que reiniciar não adianta e o serviço systemd não tenta de novo.
+"""
 import queue
 import signal
 import sys
@@ -15,6 +19,19 @@ from metricas import (Metricas, RegistroCsv, RegistroExecucao, Resultados, Telem
                       ler_throttling, linhas_janela, linhas_terminal)
 from reinicio import executar_reinicio, reinicio_devido
 from sirene import Sirene
+
+SAIDA_CONFIG_INVALIDA = 2
+
+
+def configurar_saida():
+    """Imprime linha a linha (sob o systemd a saída é um pipe e ficaria retida) e nunca derruba o programa por um
+    caractere que a codificação do terminal não representa (ex.: a seta de 'borda→decisão' no console do Windows)."""
+    try:
+        sys.stdout.reconfigure(line_buffering=True, errors="replace")
+        sys.stderr.reconfigure(line_buffering=True, errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 
 # ==========================================
 # SIRENE (GPIO) — simulada quando não está numa Raspberry (ver sirene.py)
@@ -46,6 +63,20 @@ def thread_sincronizacao():
         cliente_api.sincronizar_pendentes()
 
 
+def abrir_camera(fonte):
+    """Abre a câmera. Em câmera de rede (RTSP/HTTP) define prazo de 10 s para abrir e para ler um quadro: sem ele,
+    uma queda de rede deixa a leitura pendurada para sempre e o sistema para de monitorar sem avisar. Com o prazo a
+    leitura falha, e o laço de captura reconecta sozinho."""
+    if isinstance(fonte, str) and "://" in fonte:
+        try:
+            return cv2.VideoCapture(fonte, cv2.CAP_FFMPEG, [
+                cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10000,
+            ])
+        except (TypeError, AttributeError, cv2.error):
+            pass  # OpenCV antigo, sem esses parâmetros: abre do jeito simples
+    return cv2.VideoCapture(fonte)
+
+
 def thread_captura(fila_frames):
     """Lê a câmera continuamente e mantém só o frame mais recente na fila; reconecta se cair."""
     cap = None
@@ -53,7 +84,7 @@ def thread_captura(fila_frames):
         if cap is None or not cap.isOpened():
             if cap is not None:
                 cap.release()
-            cap = cv2.VideoCapture(config.CAMERA_SOURCE)
+            cap = abrir_camera(config.CAMERA_SOURCE)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # menos atraso em streams RTSP
             if not cap.isOpened():
                 print(f"[VÍDEO] Não foi possível abrir a câmera ({config.ocultar_credenciais(config.CAMERA_SOURCE)}). Nova tentativa em 3s...")
@@ -120,16 +151,13 @@ def _cracha(frame, linhas, x, y, cor):
         cv2.putText(frame, linha, (x + 4, topo + h + 3), fonte, escala, (255, 255, 255), 1, cv2.LINE_AA)
 
 
-def desenhar_pessoa(frame, numero, pessoa, infracoes, avaliando=True):
+def desenhar_pessoa(frame, numero, pessoa, infracoes):
     """Caixa da pessoa (vermelha se há infração confirmada, verde se não) com o crachá dela e o EPI que ela tem.
 
     Vai na foto enviada à API: quem olha vê a pessoa inteira, o número dela e o que o modelo achou nela.
-    `avaliando=False` (modelo sem capacete/colete, só em testes) desenha em cinza e NÃO diz "ok": o EPI nem foi visto.
     """
     x1, y1, x2, y2 = pessoa.caixa
-    if not avaliando:
-        cor, linhas = (128, 128, 128), [f"Pessoa {numero}", "EPI nao avaliado"]
-    elif infracoes:
+    if infracoes:
         cor, linhas = (0, 0, 255), [f"Pessoa {numero}", *(ROTULOS.get(t, t) for t in infracoes)]
     else:
         cor, linhas = (0, 160, 0), [f"Pessoa {numero}", "ok"]
@@ -162,6 +190,7 @@ def enviar_ocorrencia(jpeg, ocorrencia, t_captura, metricas):
 
 
 def main():
+    configurar_saida()
     # Import tardio: carregar o ultralytics demora e não é necessário para os testes dos outros módulos.
     from ultralytics import YOLO
 
@@ -170,15 +199,15 @@ def main():
         model = YOLO(config.MODELO_PATH, task="detect")
     except Exception as erro:
         print(f"[ERRO] Não foi possível carregar o modelo: {erro}")
-        return 1
+        return SAIDA_CONFIG_INVALIDA
 
-    # A infração agora é a ausência de EPI dentro da caixa de uma pessoa: um modelo sem as três classes (ex.: o antigo,
-    # com 'Sem_Capacete') nunca alertaria. Melhor recusar na partida do que ficar mudo.
+    # A infração é a ausência de EPI dentro da caixa de uma pessoa: um modelo sem as três classes nunca alertaria.
+    # Melhor recusar na partida do que ficar mudo.
     faltando = papeis_faltando(model.names)
     if faltando:
         print(f"[ERRO] O modelo não tem classe de: {', '.join(faltando)}. Classes encontradas: {list(model.names.values())}")
         print("       Este sistema precisa de um modelo com pessoa, capacete e colete (ver README).")
-        return 1
+        return SAIDA_CONFIG_INVALIDA
     print(f"[MODELO] Classes: {list(model.names.values())}")
 
     if sirene.preparar():
@@ -292,8 +321,8 @@ def main():
                     envio.start()
                     envios[:] = [e for e in envios if e.is_alive()] + [envio]
 
-            # Resumo periódico no terminal e no CSV (a tabela de latência e processamento do TCC).
-            if config.INTERVALO_METRICAS > 0 and time.perf_counter() - ultimo_resumo >= config.INTERVALO_METRICAS:
+            # Resumo periódico: terminal, CSV local (evidência das medições) e retrato que o heartbeat leva ao painel.
+            if time.perf_counter() - ultimo_resumo >= config.INTERVALO_METRICAS:
                 ultimo_resumo = time.perf_counter()
                 temperatura = ler_temperatura()
                 resumo = metricas.fechar_intervalo(temperatura)
@@ -330,12 +359,14 @@ def main():
                   f"FPS mínimo {metricas.fps_minimo or 0:.1f} | temperatura máx. {metricas.temp_max or 0:.0f} °C")
         parar.set()
         sirene.encerrar()
-        cv2.destroyAllWindows()
+        if config.MOSTRAR_JANELA:
+            cv2.destroyAllWindows()  # num OpenCV sem interface gráfica (headless) isto daria erro
         print("\nSistema encerrado.")
     if reiniciar:
         for envio in envios:  # não perde um alerta que ainda está subindo para a API
             envio.join(timeout=15)
-        executar_reinicio(config.REINICIO_MODO)
+        if not executar_reinicio(config.REINICIO_MODO):
+            return 1  # não conseguiu reabrir: sai com erro para o systemd (Restart=on-failure) subir o programa de novo
     return 0
 
 

@@ -1,0 +1,3 @@
+# Arquivos lidos pelo Linux da Raspberry: sempre com final de linha LF, mesmo quando o Git no Windows converteria.
+*.sh text eol=lf
+*.modelo text eol=lf

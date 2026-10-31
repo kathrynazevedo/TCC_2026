@@ -1,0 +1,23 @@
+# Serviço do systemd do monitoramento de EPIs. Modelo: o instalar_servico.sh troca os __MARCADORES__ e instala.
+[Unit]
+Description=SafeWork - monitoramento de EPIs na borda
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=__USUARIO__
+WorkingDirectory=__PASTA__
+# -u: a saída vai linha a linha para o journal (journalctl -u tcc-epi -f)
+ExecStart=__PYTHON__ -u main.py
+# Volta sozinho se cair (erro, kill, falta de memória). Parar de propósito (systemctl stop) é saída 0: não reinicia.
+Restart=on-failure
+RestartSec=5
+# Saída 2 = configuração inválida (modelo ausente ou sem as 3 classes): reiniciar não adianta, então não insiste.
+RestartPreventExitStatus=2
+# O systemctl stop envia SIGTERM; o programa encerra limpo (sirene em repouso, estado gravado) em poucos segundos.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

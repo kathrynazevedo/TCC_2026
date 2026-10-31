@@ -45,7 +45,7 @@ def papeis_faltando(nomes_das_classes):
     """Papéis (pessoa, capacete, colete) que o modelo NÃO tem. Vazio = modelo compatível.
 
     Aceita o `model.names` do Ultralytics (dict id -> nome) ou uma lista de nomes. Serve para o sistema recusar,
-    na partida, um modelo que nunca conseguiria alertar (ex.: o antigo, com classes 'Sem_Capacete').
+    na partida, um modelo que nunca conseguiria alertar (sem classe de pessoa, de capacete ou de colete).
     """
     nomes = nomes_das_classes.values() if hasattr(nomes_das_classes, "values") else nomes_das_classes
     presentes = {papel(n) for n in nomes}

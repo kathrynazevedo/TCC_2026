@@ -5,12 +5,21 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 
-try:
-    from dotenv import load_dotenv
 
-    load_dotenv(BASE_DIR / ".env")
-except ImportError:  # python-dotenv é opcional; sem ele valem apenas as variáveis do sistema
-    pass
+def carregar_env(caminho):
+    """Lê o .env sem sobrescrever variáveis que já existam no ambiente.
+
+    Aceita o BOM que o Bloco de Notas do Windows grava no início do arquivo: sem isso a primeira linha vira lixo e o
+    python-dotenv avisa que não consegue lê-la.
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:  # python-dotenv é opcional; sem ele valem apenas as variáveis do sistema
+        return False
+    return load_dotenv(caminho, encoding="utf-8-sig")
+
+
+carregar_env(BASE_DIR / ".env")
 
 
 def _float(nome, padrao):
@@ -39,21 +48,23 @@ def _fonte_camera():
 
 
 # --- API (backend Node.js) ---
-API_BASE_URL = os.getenv("API_BASE_URL", "https://tcc-2026-mfxn.onrender.com").rstrip("/")
-EDGE_API_KEY = os.getenv("EDGE_API_KEY", "")  # sem valor padrão: a chave vem do .env, nunca do código
+API_BASE_URL = os.getenv("API_BASE_URL", "https://tcc-2026-mfxn.onrender.com").strip().rstrip("/")
+EDGE_API_KEY = os.getenv("EDGE_API_KEY", "").strip()  # sem valor padrão: a chave vem do .env, nunca do código
 ID_DISPOSITIVO = _int("ID_DISPOSITIVO", 1)  # id em dispositivo_borda, no banco
 URL_INFRACOES = f"{API_BASE_URL}/api/violations"  # uma infração isolada (formato antigo)
 URL_OCORRENCIAS = f"{API_BASE_URL}/api/occurrences"  # a cena inteira: foto + todas as pessoas e seus EPIs
 URL_HEARTBEAT = f"{API_BASE_URL}/api/status/heartbeat"
 URL_HEALTH = f"{API_BASE_URL}/api/health"
+INTERVALO_HEARTBEAT = _float("INTERVALO_HEARTBEAT", 30.0)  # s entre sinais de vida (a API dá a placa como offline após 90 s)
 
 # --- Câmera e modelo ---
 CAMERA_SOURCE = _fonte_camera()
-# Modelo de 3 classes (pessoa, capacete, colete). O "best.tflite" antigo (Sem_Capacete) não serve mais e é ignorado.
+# Modelo de 3 classes (pessoa, capacete, colete); sem elas o programa nem inicia.
 MODELO_PATH = os.getenv("MODELO_PATH", str(BASE_DIR / "modelo_pessoa_epi.tflite"))
 LARGURA_FRAME, ALTURA_FRAME = 640, 480
+MOSTRAR_JANELA = os.getenv("MOSTRAR_JANELA", "false").lower() == "true"  # só para depuração com monitor
 
-# --- O que conta como detecção (o modelo tem 3 classes: pessoa, capacete e colete) ---
+# --- O que conta como detecção ---
 # Abaixo disso a "pessoa" é ignorada. 0,65 separa as pessoas reais (alertas em 0,74 a 0,83 nos testes) das duvidosas que
 # aparecem e somem (0,53 a 0,56). Subir reduz alarme falso, mas uma pessoa vista com pouca certeza deixa de ser julgada.
 # NUNCA abaixo de 0,50: o banco da API recusa infração com confiança menor que isso.
@@ -61,8 +72,8 @@ CONFIANCA_PESSOA = _float("CONFIANCA_PESSOA", 0.65)
 # Confiança mínima para aceitar um EPI como PRESENTE. Há dois erros possíveis e eles puxam em sentidos opostos:
 #   - limiar BAIXO: aceita um colete/capacete duvidoso (ex.: 53% sobre uma camiseta) e deixa passar uma falta de EPI;
 #   - limiar ALTO: recusa um EPI real que o modelo viu com pouca certeza e acusa quem está equipado (alarme falso).
-# O colete é mais exigente porque é maior e confunde-se com roupas claras; ajuste olhando as confianças reais
-# (medir_confianca.py) e a curva F1 por classe da validação. CONFIANCA_EPI, se definida, vale para os dois.
+# O colete é mais exigente porque é maior e confunde-se com roupas claras; ajuste olhando a confiança média por classe
+# na tela Sistema e a curva F1 da validação. CONFIANCA_EPI, se definida, vale para os dois.
 CONFIANCA_EPI = _float("CONFIANCA_EPI", 0.50)
 CONFIANCA_CAPACETE = _float("CONFIANCA_CAPACETE", CONFIANCA_EPI)
 CONFIANCA_COLETE = _float("CONFIANCA_COLETE", CONFIANCA_EPI if "CONFIANCA_EPI" in os.environ else 0.65)
@@ -70,35 +81,39 @@ LIMIARES_EPI = {"capacete": CONFIANCA_CAPACETE, "colete": CONFIANCA_COLETE}  # m
 # O modelo devolve tudo a partir do menor limiar; cada papel (pessoa, capacete, colete) é filtrado depois.
 CONFIANCA_MODELO = min(CONFIANCA_PESSOA, CONFIANCA_CAPACETE, CONFIANCA_COLETE)
 ALTURA_MINIMA_PESSOA = _int("ALTURA_MINIMA_PESSOA", 120)  # px (frame 640x480): pessoa menor que isso não é julgada
-TEMPO_CONFIRMACAO = _float("TEMPO_CONFIRMACAO", 1.0)  # s de falta CONTÍNUA de EPI antes de acusar (0 = 1º quadro)
-MOSTRAR_JANELA = os.getenv("MOSTRAR_JANELA", "false").lower() == "true"  # só para depuração com monitor
 
 # --- Regras de alerta ---
+TEMPO_CONFIRMACAO = _float("TEMPO_CONFIRMACAO", 1.0)  # s de falta CONTÍNUA de EPI antes de acusar (0 = 1º quadro)
 TEMPO_REALERTA = _float("TEMPO_REALERTA", 0.0)  # s para repetir o alerta de quem segue sem EPI (0 = um só por permanência)
 RASTREADOR_TEMPO_AUSENTE = _float("RASTREADOR_TEMPO_AUSENTE", 10.0)  # s sem ver a pessoa antes de "esquecê-la"
 RASTREADOR_TEMPO_PRESENTE = _float("RASTREADOR_TEMPO_PRESENTE", 3.0)  # s sem aparecer até sair da contagem de "em cena"
 RASTREADOR_DIST_MAXIMA = _int("RASTREADOR_DIST_MAXIMA", 150)  # px (frame 640x480) para ser a mesma pessoa
-# Pino do relé da sirene pela numeração FÍSICA da placa (modo BOARD; o pino 11 é o do teste de bancada).
+
+# --- Sirene (relé no GPIO) ---
+# Pino do relé pela numeração FÍSICA da placa (modo BOARD; o pino 11 é o do teste de bancada).
 PINO_SIRENE = _int("PINO_SIRENE", 11)
 # Nível que LIGA o relé: "baixo" (módulos de relé comuns, acionam em LOW) ou "alto". O contrário é o repouso.
 SIRENE_ATIVA_EM_BAIXO = os.getenv("SIRENE_ATIVA_EM", "baixo").strip().lower() != "alto"
 DURACAO_SIRENE = _float("DURACAO_SIRENE", 2.0)
-INTERVALO_HEARTBEAT = _float("INTERVALO_HEARTBEAT", 30.0)
-
-# --- Métricas de desempenho e estabilidade (tabela de latência do TCC) ---
-INTERVALO_METRICAS = _float("INTERVALO_METRICAS", 10.0)  # s entre os resumos no terminal e no CSV (0 = desligado)
-ARQUIVO_METRICAS = Path(os.getenv("ARQUIVO_METRICAS", str(BASE_DIR / "metricas.csv")))
-ARQUIVO_ESTADO = Path(os.getenv("ARQUIVO_ESTADO", str(BASE_DIR / "estado_execucao.json")))  # conta os reinícios
-
-# --- Reinício programado do turno (ver reinicio.py) ---
-REINICIAR_APOS_HORAS = _float("REINICIAR_APOS_HORAS", 8.0)  # h de operação até reiniciar sozinho (0 = desligado)
-REINICIO_MODO = os.getenv("REINICIO_MODO", "programa").strip().lower()  # "programa" (só o main.py) ou "placa" (sudo reboot)
-REINICIO_TOLERANCIA_S = _float("REINICIO_TOLERANCIA_S", 600.0)  # espera por um momento sem ninguém em cena antes de forçar
-
-# --- Resultado da validação do modelo (mAP por classe), gerado no Colab e mostrado na tela Sistema ---
-ARQUIVO_VALIDACAO = Path(os.getenv("ARQUIVO_VALIDACAO", str(BASE_DIR / "validacao_modelo.json")))
 
 # --- Modo offline: alertas que não chegaram à API ficam aqui até a sincronização ---
 PASTA_PENDENTES = Path(os.getenv("PASTA_PENDENTES", str(BASE_DIR / "pendentes")))
 MAX_PENDENTES = _int("MAX_PENDENTES", 200)  # protege o cartão SD
 INTERVALO_SINCRONIZACAO = _float("INTERVALO_SINCRONIZACAO", 60.0)
+
+# --- Métricas: terminal, painel (tela Sistema) e registro local em CSV ---
+# Os resumos fecham a cada INTERVALO_METRICAS segundos (nunca desligam: o painel depende deles; valor inválido volta a 10 s).
+INTERVALO_METRICAS = _float("INTERVALO_METRICAS", 10.0)
+if INTERVALO_METRICAS <= 0:
+    INTERVALO_METRICAS = 10.0
+ARQUIVO_METRICAS = Path(os.getenv("ARQUIVO_METRICAS", str(BASE_DIR / "metricas.csv")))  # rodado ao passar de 5 MB
+ARQUIVO_ESTADO = Path(os.getenv("ARQUIVO_ESTADO", str(BASE_DIR / "estado_execucao.json")))  # conta os reinícios
+# Resultado da validação do modelo (mAP por classe), gerado no Colab e mostrado na tela Sistema.
+ARQUIVO_VALIDACAO = Path(os.getenv("ARQUIVO_VALIDACAO", str(BASE_DIR / "validacao_modelo.json")))
+
+# --- Reinício programado do turno (ver reinicio.py) ---
+REINICIAR_APOS_HORAS = _float("REINICIAR_APOS_HORAS", 8.0)  # h de operação até reiniciar sozinho (0 = desligado)
+REINICIO_MODO = os.getenv("REINICIO_MODO", "programa").strip().lower()  # "programa" (só o main.py) ou "placa" (sudo reboot)
+if REINICIO_MODO not in ("programa", "placa"):
+    REINICIO_MODO = "programa"
+REINICIO_TOLERANCIA_S = _float("REINICIO_TOLERANCIA_S", 600.0)  # espera por um momento sem ninguém em cena antes de forçar

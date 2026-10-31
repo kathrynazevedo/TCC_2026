@@ -1,9 +1,10 @@
 """Diagnóstico rápido: a Raspberry alcança a API e a chave está correta?
 
     python teste_conexao.py              confere a rede, a chave e o heartbeat
-    python teste_conexao.py --infracao   além disso, envia uma infração de teste (com foto) e confere no painel
+    python teste_conexao.py --infracao   além disso, envia uma ocorrência de teste (com foto) e confere no painel
 
-A infração de teste fica gravada no banco (confiança 0.99). Ao final o script mostra o comando para apagá-la.
+A ocorrência de teste é uma pessoa sem capacete E sem colete (grava um único registro "no-helmet-no-vest") e fica
+no banco com confiança 0.99. Ao final o script mostra o comando para apagá-la.
 """
 import sys
 
@@ -81,14 +82,15 @@ def enviar_infracao_de_teste():
                 "numero": 1,
                 "caixa": [40, 40, 600, 440],
                 "capacete": {"estado": "ausente", "confianca": 0.99, "novo": True},
-                "colete": {"estado": "ok", "confianca": 0.95, "novo": False},
+                "colete": {"estado": "ausente", "confianca": 0.99, "novo": True},
             }
         ],
     }
-    print("[OCORRÊNCIA] Enviando ocorrência de teste (1 pessoa sem capacete, confiança 0.99) com foto...")
+    print("[OCORRÊNCIA] Enviando ocorrência de teste (1 pessoa sem capacete e sem colete, confiança 0.99) com foto...")
     if cliente_api.enviar_ocorrencia(buffer.tobytes(), ocorrencia) != cliente_api.OK:
         print("[ERRO] A API não aceitou a ocorrência de teste. Veja a mensagem [REDE] acima.")
-        print("[DICA] Se o erro for 500, o schema.sql novo (tabela ocorrencia) ainda não foi aplicado no banco.")
+        print("[DICA] Se o erro for 500, falta aplicar no banco o schema.sql (tabela ocorrencia) e a migração")
+        print("       db/migracao_tipo_epi.sql (valor no-helmet-no-vest do tipo tipo_epi).")
         return False
 
     # Confere no mesmo endpoint que o dashboard usa: a infração mais recente deve ser a de teste.
