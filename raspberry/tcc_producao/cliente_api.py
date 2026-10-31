@@ -76,12 +76,15 @@ def enviar_ocorrencia(jpeg, ocorrencia):
     return _post(config.URL_OCORRENCIAS, "ocorrencia.jpg", jpeg, data={"occurrence": json.dumps(ocorrencia)})
 
 
-def enviar_heartbeat():
-    """True se a API confirmou que a placa está viva."""
+def enviar_heartbeat(telemetria=None):
+    """True se a API confirmou que a placa está viva. `telemetria` (dict) leva temperatura, FPS etc. para o painel."""
+    corpo = {"id_dispositivo": config.ID_DISPOSITIVO}
+    if telemetria:
+        corpo["telemetria"] = telemetria
     try:
         resposta = requests.post(
             config.URL_HEARTBEAT,
-            json={"id_dispositivo": config.ID_DISPOSITIVO},
+            json=corpo,
             headers=_cabecalhos(),
             timeout=5,
         )

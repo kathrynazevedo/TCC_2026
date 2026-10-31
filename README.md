@@ -67,12 +67,15 @@ Sistema de câmera inteligente baseado em Visão Computacional que monitora cant
 │       └── lib/              # formatação, rótulos, geração de relatórios (PDF/CSV/ZIP)
 └── raspberry/tcc_producao/
     ├── main.py               # loop principal: câmera → modelo → sirene + alerta
+    ├── reinicio.py           # reinício programado do turno (programa ou placa)
+    ├── sirene.py             # relé da sirene no GPIO (pino físico, nível configurável); simulada fora da Raspberry
+    ├── testar_sirene.py      # teste de bancada: repouso → sirene → repouso, com o pino do .env
     ├── config.py             # configurações (variáveis de ambiente / .env)
-    ├── deteccao.py           # regras: classes, monta pessoas (cabeça + tronco), um alerta por pessoa e infração
+    ├── deteccao.py           # regras: acha o EPI dentro da caixa de cada pessoa; falta contínua = um alerta por pessoa e infração
     ├── rastreador.py         # rastreamento por centroide: ID estável por pessoa entre frames
     ├── cliente_api.py        # envio à API, heartbeat e fila offline (reenvio automático)
     ├── teste_conexao.py      # diagnóstico de rede/chave (--infracao envia uma infração de teste)
-    ├── best.tflite           # modelo treinado
+    ├── modelo_pessoa_epi.tflite  # modelo treinado (3 classes: pessoa, capacete, colete)
     ├── requirements.txt      # dependências Python
     ├── setup.sh              # prepara a Raspberry (venv, dependências e .env)
     └── .env.example          # modelo das variáveis de ambiente
@@ -88,7 +91,9 @@ Pré-requisitos: **Node.js 20+**, um banco **PostgreSQL** (o projeto usa o [Neon
 
 Execute no banco, nesta ordem: `backend_api/db/schema.sql` e, para ter dados de demonstração, `backend_api/db/seed.sql` (cria 3 zonas, a câmera `RPI-TCC-001` com `id_dispositivo = 1` e alguns trabalhadores).
 
-> **Banco já existente?** Rode o `schema.sql` de novo antes de publicar a API nova: ele é idempotente e cria a tabela `ocorrencia` e as colunas `infracao.id_ocorrencia` / `infracao.numero_pessoa`. Os registros antigos continuam como estão.
+> **Banco com o ENUM `tipo_epi`?** (é o caso do Neon deste projeto) Rode também `backend_api/db/migracao_tipo_epi.sql`, que acrescenta o valor `no-helmet-no-vest`. Sem ele, a mesma pessoa sem capacete **e** sem colete dá erro 500 na API. O banco ainda exige `score_confianca >= 0.5`, então não abaixe `CONFIANCA_PESSOA` da placa de 0,50.
+
+> **Banco já existente?** Rode o `schema.sql` de novo antes de publicar a API nova: ele é idempotente e cria a tabela `ocorrencia`, as colunas `infracao.id_ocorrencia` / `infracao.numero_pessoa` e as colunas de telemetria `dispositivo_borda.telemetria` / `telemetria_em`. Os registros antigos continuam como estão. Sem as colunas de telemetria a API segue funcionando (a placa continua "online"); só a tela Sistema fica sem os cartões.
 
 ### 2. Backend
 
@@ -133,6 +138,61 @@ Para provar também o envio de uma infração com foto (sem câmera nem modelo),
 
 Se a API estiver fora do ar, os alertas ficam em `pendentes/` e são reenviados automaticamente a cada minuto.
 
+**O modelo (`modelo_pessoa_epi.tflite`, ou o caminho em `MODELO_PATH`) tem 3 classes: `person`, `helmet` e `vest`** (os nomes são reconhecidos em português e inglês, ver `deteccao.py`). Não existe classe "sem capacete": a infração é a **ausência** do EPI dentro da caixa de uma pessoa. Por isso:
+
+- **Um modelo sem as três classes é recusado na partida** (ex.: o antigo, com `Sem_Capacete`), em vez de rodar mudo.
+- **A falta precisa durar `TEMPO_CONFIRMACAO` segundos (padrão 1,0 s) sem interrupção** antes de alertar: um capacete que o modelo deixa de ver por um quadro não é alarme.
+- **Capacete e colete entram com limiar baixo** (`CONFIANCA_EPI=0.35`): é melhor aceitar um EPI duvidoso como presente do que acusar quem está equipado.
+- **Quem não dá para julgar não é acusado:** pessoa menor que `ALTURA_MINIMA_PESSOA` (120 px) ou com a cabeça cortada pela borda de cima do quadro fica como `desconhecido`.
+- Na ocorrência enviada à API, a `confianca` de um EPI `ausente` é a da **pessoa** detectada (não há detecção de capacete para medir).
+
+**Sirene:** o relé fica no **pino físico 11** (numeração BOARD, o mesmo do teste de bancada) e toca por `DURACAO_SIRENE` segundos (padrão 2) a cada alerta novo; novos alertas durante o toque são ignorados. O relé liga em nível **baixo** por padrão e repousa em alto (o pino já nasce em repouso, sem pulso ao ligar o programa). Se a sua sirene tocar ao contrário, ajuste `SIRENE_ATIVA_EM=alto` no `.env`. Confira de ouvido com `python3 testar_sirene.py`.
+
+> **Sirene que liga ao terminar o programa?** Ao fim de um processo a biblioteca de GPIO pode soltar o pino (entrada flutuante), e alguns módulos de relé entendem isso como "ligar". O programa mantém o pino em repouso enquanto roda e não chama `GPIO.cleanup()` ao sair, mas se a sirene ainda ligar depois do fim do programa a correção é elétrica: um resistor de pull-up (cerca de 10 kΩ) entre o pino do relé e 3,3 V (módulo que liga em nível baixo) ou pull-down para o GND (módulo que liga em nível alto). Rodar o programa como serviço `systemd` com `Restart=always` também mantém o pino sempre segurado.
+
+**Reinício programado do turno:** depois de `REINICIAR_APOS_HORAS` horas de operação (padrão **8**; `0` desliga) o programa reinicia sozinho, esperando um momento sem ninguém em cena (no máximo `REINICIO_TOLERANCIA_S`, padrão 600 s). `REINICIO_MODO=programa` (padrão) reabre só o `main.py`; `REINICIO_MODO=placa` faz `sudo reboot` e só vale se o programa sobe sozinho no boot (serviço `systemd`). O reinício programado não conta como queda: a tela Sistema mostra "Reinícios em 8 h" separando as quedas inesperadas dos programados, e a contagem regressiva até o próximo.
+
+**Validação do modelo (mAP por classe) na tela Sistema:** depois de treinar, rode no Colab a célula abaixo e copie o `validacao_modelo.json` gerado para a pasta do programa na placa (`~/tcc_producao`). A placa o envia no heartbeat e a tela Sistema mostra a tabela. Sem o arquivo, a tabela fica vazia (nenhum valor é inventado).
+
+```python
+import json
+from ultralytics import YOLO
+modelo = YOLO('/content/drive/MyDrive/treino_epi/v3_pessoa_epi/weights/best.pt')
+r = modelo.val(data='/content/person-vest-helmet1-2/data.yaml', imgsz=640, split='test')  # sem pasta "test": split='val'
+b = r.box
+classes = {modelo.names[int(c)]: {"precisao": float(b.p[i]), "recall": float(b.r[i]),
+                                  "map50": float(b.ap50[i]), "map50_95": float(b.ap[i])}
+           for i, c in enumerate(b.ap_class_index)}
+classes["todas"] = {"precisao": float(b.mp), "recall": float(b.mr), "map50": float(b.map50), "map50_95": float(b.map)}
+json.dump({"modelo": "modelo_pessoa_epi.tflite", "conjunto": "test", "imagens": int(r.seen), "classes": classes},
+          open('/content/validacao_modelo.json', 'w'), ensure_ascii=False, indent=1)
+```
+
+
+Os limiares podem ser ajustados no `.env` (ver `.env.example`); revalide-os sempre que trocar o modelo.
+
+#### Métricas de desempenho e estabilidade
+
+Com o `main.py` rodando, a cada `INTERVALO_METRICAS` segundos (padrão 10) o terminal mostra duas linhas e o mesmo dado é anexado a `metricas.csv` (separador `;`, abre direto no Excel):
+
+```
+[MÉTRICAS 10s] pré 4.5 ms | inferência 60.0 ms | pós 1.5 ms | total 66 ms (p95 67) | 5.9 FPS (mín. 5.4) | borda→decisão 53 ms
+[SISTEMA] CPU 58 °C (máx. 61) | limitação 0x0 | ligado há 2h10 | execução nº 1 | reinícios em 8 h: 0 (0 queda(s)) | sirene 73 ms | API 277 ms
+```
+
+| Linha da tabela do TCC | Onde sai |
+|---|---|
+| Pré-processamento / Inferência / Pós-processamento (NMS) | `pré`, `inferência`, `pós` (médias do intervalo; `p95` e pior caso no CSV) |
+| Tempo total por quadro | `total` (redimensionamento + pré + inferência + pós + regras) |
+| FPS sustentada | `FPS` (média do intervalo) e `mín.` (pior intervalo, sem contar o aquecimento) |
+| Latência ponta a ponta (borda → alerta) | `borda→decisão`, `sirene` e `API`, contados desde a captura do quadro (a sirene e o envio só aparecem quando houve alerta) |
+| Temperatura em operação contínua | `CPU` e `máx.` (lidos de `/sys/class/thermal`; `limitação` vem de `vcgencmd get_throttled`, `0x0` = sem limitação) |
+| Estabilidade (8 h / reinícios) | `reinícios em 8 h` e `queda(s)`, a partir de `estado_execucao.json` |
+
+Ao encerrar (Ctrl+C) o programa imprime um `[RESUMO]` com os valores de toda a execução. Com `MOSTRAR_JANELA=true` as mesmas métricas aparecem numa faixa na janela de vídeo. `INTERVALO_METRICAS=0` desliga tudo isso.
+
+Limites: o contador só enxerga um reinício **quando o programa volta a subir**, e uma queda de energia é reconhecida pelo estado "não encerrado" da execução anterior. O repositório não traz reinício automático: para operar 8 h sem supervisão, rode o `main.py` como serviço `systemd` com `Restart=on-failure`. Temperatura e limitação só existem na Raspberry (no PC aparecem como `-`). O dashboard acrescenta até 5 s à latência percebida (consulta periódica); isso não entra nesta medição da borda.
+
 ---
 
 ## 🔌 API
@@ -148,12 +208,16 @@ Se a API estiver fora do ar, os alertas ficam em `pendentes/` e são reenviados 
 | `GET` | `/api/metrics` | dashboard | Totais, não conformidades, taxa de segurança, câmeras |
 | `GET` | `/api/areas` | dashboard | Zonas com seus dispositivos e se estão online |
 | `GET` | `/api/workers` | dashboard | Equipe cadastrada |
-| `POST` | `/api/status/heartbeat` | Raspberry 🔑 | Sinal de vida da placa |
-| `GET` | `/api/status/edge` | dashboard | Placa online/offline |
+| `POST` | `/api/status/heartbeat` | Raspberry 🔑 | Sinal de vida da placa, com a `telemetria` opcional (ver abaixo) |
+| `GET` | `/api/status/edge` | dashboard | Placa online/offline e o último retrato da telemetria |
 
 🔑 exige o header `x-api-key` com o valor de `EDGE_API_KEY`.
 
 Códigos de tipo de EPI: `no-helmet` (sem capacete), `no-vest` (sem colete) e `no-helmet-no-vest` (sem capacete **e** sem colete). Quando a **mesma pessoa** está sem capacete e sem colete na mesma captura, a API grava **um único** registro `no-helmet-no-vest`, em vez de dois. Duas pessoas diferentes (uma sem capacete, outra sem colete) continuam em registros separados.
+
+### Telemetria da placa (tela Sistema)
+
+A cada heartbeat (30 s) a placa envia, junto do `id_dispositivo`, um objeto opcional `telemetria` com o que antes só aparecia no terminal: temperatura da CPU (e máxima), limitação térmica (`vcgencmd get_throttled`), memória e carga da CPU, FPS, tempos de pré/inferência/pós/total, latência borda → decisão / sirene / API, tempo ligado, nº da execução, reinícios e quedas em 8 h e o nome do modelo. A API **sanitiza campo a campo** (valor fora da faixa ou desconhecido é descartado, nunca recusa o heartbeat) e guarda só o último retrato em `dispositivo_borda.telemetria`; `GET /api/status/edge` o devolve em `telemetria`, com `atualizada_ha_segundos`. Também vão no heartbeat os **resultados acumulados da execução**: a confiança média por classe (capacete, colete e ausência de EPI, uma amostra por classe a cada segundo), o desempenho por quantidade de pessoas no quadro (FPS, inferência, latência borda → decisão e temperatura para 1, 2, 3 e 4 ou mais pessoas), a temperatura média, a contagem regressiva do reinício programado e, se existir, o `validacao_modelo.json` (mAP por classe). A tela **Sistema** mostra cada item num cartão (temperatura e carga com medidor, limitação térmica decodificada) e esmaece tudo quando a placa fica sem sinal.
 
 ### Ocorrência: a cena inteira numa única requisição
 
@@ -189,8 +253,8 @@ Veja os modelos `backend_api/.env.example`, `frontend/.env.example` e `raspberry
 ## ✅ Testes
 
 ```bash
-npm test                                                  # API: 35 testes de integração
-(cd raspberry/tcc_producao && python -m unittest discover -s tests)   # placa: 40 testes (sem câmera nem modelo)
+npm test                                                  # API: 42 testes de integração
+(cd raspberry/tcc_producao && python -m unittest discover -s tests)   # placa: 102 testes (sem câmera, modelo nem GPIO)
 npm run lint                                              # frontend
 ```
 
@@ -200,5 +264,6 @@ Os testes da API usam um PostgreSQL em memória e um Cloudinary simulado: não p
 
 - **Autenticação do dashboard é simulada** (usuário fixo em `frontend/src/lib/AuthContext.jsx`). A proteção existe apenas nas rotas da placa. Para uso real, adicione login antes de expor o painel na internet.
 - **Taxa de segurança** = ocorrências que não estão pendentes (`active`) ÷ total. Ocorrências "reconhecidas" contam como tratadas.
-- O histórico do Git ainda contém a senha de teste da câmera (`admin:admin123`) e fotos de infrações de versões antigas. **Troque a senha do DVR/câmera**; se o repositório for público, considere limpar o histórico.
-- O modelo `.tflite` espera as classes `Sem_Capacete` / `Sem_Colete` (ou `no-helmet` / `no-vest`); outros nomes são ignorados — ajuste em `deteccao.py` se retreinar o modelo.
+- O histórico do Git ainda contém a senha de teste da câmera, uma chave antiga do Roboflow (`teste_final_epi.py`) e fotos de infrações de versões antigas. **Troque a senha do DVR/câmera, gere uma nova chave no Roboflow e uma nova `EDGE_API_KEY`**; trocar as chaves já deixa as antigas inúteis, sem precisar reescrever o histórico. Se o repositório for público, considere torná-lo privado.
+- O modelo `.tflite` precisa ter as classes de **pessoa, capacete e colete** (`person`/`helmet`/`vest`, ou os nomes em português); a falta de EPI é inferida pela ausência dentro da caixa da pessoa. Como o alerta nasce de uma não-detecção, o recall de capacete e colete do modelo define a taxa de alarmes falsos: meça-a com a câmera real, com todos equipados, antes de usar.
+- **Pessoas sobrepostas** (uma atrás da outra) podem fazer o capacete de uma cair na região da cabeça da vizinha; o sistema entrega cada EPI à pessoa mais próxima, mas oclusão forte continua sendo uma fonte de erro.

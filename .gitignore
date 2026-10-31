@@ -29,6 +29,10 @@ venv/
 raspberry/**/pendentes/
 raspberry/**/infrações/
 raspberry/**/*.jpg
+# Raspberry Pi: medições e contador de reinícios são locais de cada placa
+raspberry/**/metricas.csv
+raspberry/**/estado_execucao.json
+raspberry/**/*.tgz
 
 # Editores e sistema
 .vscode/*
@@ -43,3 +47,5 @@ raspberry/**/*.jpg
 
 # Worktrees locais do Claude Code
 .claude/worktrees/
+# Modelos provisórios (cópias de checkpoints do treino); o modelo em uso é o modelo_pessoa_epi.tflite
+raspberry/**/best_epoca*.tflite

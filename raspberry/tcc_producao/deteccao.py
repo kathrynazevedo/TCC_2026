@@ -1,4 +1,15 @@
-"""Regras de negócio da detecção, sem dependências pesadas (testável fora da Raspberry)."""
+"""Regras de negócio da detecção, sem dependências pesadas (testável fora da Raspberry).
+
+O modelo detecta três coisas: a PESSOA, o CAPACETE e o COLETE (os equipamentos presentes). Não existe classe "sem
+EPI": a infração é a AUSÊNCIA. Para cada pessoa o sistema procura um capacete na região da cabeça e um colete na
+região do tronco, dentro da caixa dela; quem não tem, de forma contínua por `tempo_confirmacao` segundos, está em
+infração.
+
+Como a infração nasce de uma NÃO-detecção, três cuidados evitam alarme falso:
+  - a falta tem de durar `tempo_confirmacao` segundos (um capacete que o modelo deixa de ver por um quadro não alerta);
+  - só se avalia quem dá para avaliar: pessoa pequena demais (longe) ou com a cabeça cortada pela borda não conta;
+  - capacete/colete entram com um limiar BAIXO de confiança (melhor aceitar um duvidoso como presente).
+"""
 from collections import namedtuple
 
 from rastreador import Rastreador
@@ -7,34 +18,38 @@ TIPO_CAPACETE = "no-helmet"
 TIPO_COLETE = "no-vest"
 ROTULOS = {TIPO_CAPACETE: "sem capacete", TIPO_COLETE: "sem colete"}  # para mensagens ao operador
 
-CABECA, TRONCO = "cabeca", "tronco"  # onde cada EPI fica no corpo
+# Estado de um EPI de uma pessoa (as mesmas palavras que a API recebe).
+OK, AUSENTE, DESCONHECIDO = "ok", "ausente", "desconhecido"
 
-# Nome de classe que o modelo pode emitir -> (parte do corpo, tipo de infração ou None se o EPI está correto).
-_CLASSES = {
-    "sem_capacete": (CABECA, TIPO_CAPACETE),
-    "no_helmet": (CABECA, TIPO_CAPACETE),
-    "capacete": (CABECA, None),
-    "helmet": (CABECA, None),
-    "sem_colete": (TRONCO, TIPO_COLETE),
-    "no_vest": (TRONCO, TIPO_COLETE),
-    "colete_refletivo": (TRONCO, None),
-    "vest": (TRONCO, None),
+# Papel de cada classe do modelo; o modelo é identificado pelo NOME da classe, não pela ordem.
+PESSOA, CAPACETE, COLETE = "pessoa", "capacete", "colete"
+_NOMES = {
+    PESSOA: {"person", "pessoa", "people", "worker", "trabalhador", "human"},
+    CAPACETE: {"helmet", "hardhat", "hard_hat", "safety_helmet", "capacete"},
+    COLETE: {"vest", "safety_vest", "reflective_vest", "safetyvest", "colete", "colete_refletivo"},
 }
+_PAPEL_DO_NOME = {nome: papel for papel, nomes in _NOMES.items() for nome in nomes}
 
-# Duas caixas da mesma parte que se sobrepõem mais que isso (da menor) são a mesma coisa vista duas vezes.
+# Caixas do mesmo EPI que se sobrepõem mais que isso (da menor) são a mesma coisa vista duas vezes.
 SOBREPOSICAO_MAXIMA = 0.5
+MARGEM_TOPO = 3  # px: pessoa encostada no topo do quadro está com a cabeça cortada
 
 
-def interpretar(nome_classe):
-    """Devolve (parte do corpo, tipo de infração ou None) ou None se a classe não é um EPI conhecido."""
+def papel(nome_classe):
+    """'Helmet' -> 'capacete', 'person' -> 'pessoa', ...; None se a classe não é nenhuma das três."""
     chave = str(nome_classe).strip().lower().replace("-", "_").replace(" ", "_")
-    return _CLASSES.get(chave)
+    return _PAPEL_DO_NOME.get(chave)
 
 
-def classificar(nome_classe):
-    """Devolve 'no-helmet', 'no-vest' ou None (classe que não é infração, ex.: 'Capacete')."""
-    item = interpretar(nome_classe)
-    return item[1] if item else None
+def papeis_faltando(nomes_das_classes):
+    """Papéis (pessoa, capacete, colete) que o modelo NÃO tem. Vazio = modelo compatível.
+
+    Aceita o `model.names` do Ultralytics (dict id -> nome) ou uma lista de nomes. Serve para o sistema recusar,
+    na partida, um modelo que nunca conseguiria alertar (ex.: o antigo, com classes 'Sem_Capacete').
+    """
+    nomes = nomes_das_classes.values() if hasattr(nomes_das_classes, "values") else nomes_das_classes
+    presentes = {papel(n) for n in nomes}
+    return [p for p in (PESSOA, CAPACETE, COLETE) if p not in presentes]
 
 
 # ==========================================
@@ -48,7 +63,7 @@ def _sobreposicao(a, b):
     """Interseção dividida pela área da MENOR caixa: 1.0 = uma está inteira dentro da outra.
 
     Usa a menor área (e não o IoU) porque o modelo costuma desenhar uma segunda caixa menor dentro da primeira
-    sobre a mesma cabeça/tronco; o IoU dessas fica baixo e o NMS do YOLO não as funde.
+    sobre o mesmo equipamento; o IoU dessas fica baixo e o NMS do YOLO não as funde.
     """
     largura = min(a[2], b[2]) - max(a[0], b[0])
     altura = min(a[3], b[3]) - max(a[1], b[1])
@@ -67,120 +82,128 @@ def _sem_duplicadas(partes):
     return mantidas
 
 
-def _afinidade(cabeca, tronco):
-    """Pode esta cabeça ser da pessoa deste tronco? Devolve None, ou (nível, custo) para ordenar os pares.
+def _afinidade_capacete(corpo, capacete):
+    """Custo (menor = melhor) se o capacete está na região da cabeça da pessoa; None se não está.
 
-    Nível 0 = bem alinhados (o centro da cabeça cai na faixa horizontal do tronco, com 25% de folga, e a cabeça
-    começa na metade de cima dele). Nível 1 = só plausível (a cabeça pode estar inclinada, na borda do vídeo ou
-    perto da câmera): o centro dela passa da faixa do tronco por até uma largura de cabeça. Os pares de nível 0
-    são ligados primeiro, então o nível 1 só vale para o que sobrar; isso evita que uma mesma pessoa vire duas
-    ("só cabeça" + "só tronco") quando a detecção não encaixa certinho.
+    A cabeça fica no alto da caixa da pessoa: o centro do capacete tem de cair na faixa horizontal dela (com 10% de
+    folga) e entre um pouco acima do topo e 40% da altura.
     """
-    cx, cy = _centro(cabeca)
-    custo = abs(cx - _centro(tronco)[0])
-    if cy >= tronco[3]:  # centro da cabeça abaixo do fim do tronco: não é a mesma pessoa
+    x1, y1, x2, y2 = corpo
+    largura, altura = x2 - x1, y2 - y1
+    if largura <= 0 or altura <= 0:
         return None
+    cx, cy = _centro(capacete)
+    if not (x1 - 0.1 * largura <= cx <= x2 + 0.1 * largura and y1 - 0.15 * altura <= cy <= y1 + 0.40 * altura):
+        return None
+    return abs(cx - (x1 + x2) / 2) / largura + abs(cy - (y1 + 0.10 * altura)) / altura
 
-    largura_tronco = tronco[2] - tronco[0]
-    altura_tronco = tronco[3] - tronco[1]
-    fora = max(tronco[0] - cx, cx - tronco[2], 0)  # quanto o centro da cabeça passa da faixa do tronco
-    if fora <= 0.25 * largura_tronco and cabeca[1] < tronco[1] + 0.6 * altura_tronco:
-        return 0, custo
-    if fora <= cabeca[2] - cabeca[0]:
-        return 1, custo
-    return None
+
+def _afinidade_colete(corpo, colete):
+    """Custo (menor = melhor) se o colete está na região do tronco da pessoa; None se não está."""
+    x1, y1, x2, y2 = corpo
+    largura, altura = x2 - x1, y2 - y1
+    if largura <= 0 or altura <= 0:
+        return None
+    cx, cy = _centro(colete)
+    if not (x1 - 0.1 * largura <= cx <= x2 + 0.1 * largura and y1 + 0.10 * altura <= cy <= y1 + 0.85 * altura):
+        return None
+    return abs(cx - (x1 + x2) / 2) / largura + abs(cy - (y1 + 0.40 * altura)) / altura
 
 
 # ==========================================
 # PESSOAS
 # ==========================================
-Parte = namedtuple("Parte", "nome infracao confianca caixa")  # infracao: tipo ou None (EPI correto)
+Parte = namedtuple("Parte", "nome confianca caixa")
 
 
 class Pessoa:
-    """Uma pessoa no frame: a cabeça e/ou o tronco detectados (None = não detectado)."""
+    """Uma pessoa detectada no frame, com o capacete e o colete que o modelo achou dentro da caixa dela."""
 
-    def __init__(self, cabeca=None, tronco=None):
-        self.cabeca = cabeca
-        self.tronco = tronco
+    def __init__(self, corpo, avaliavel):
+        self.corpo = corpo  # Parte da classe pessoa
+        self.capacete = None  # Parte, ou None se nenhum capacete foi achado na região da cabeça
+        self.colete = None
+        self.avaliavel = avaliavel  # {TIPO_CAPACETE: bool, TIPO_COLETE: bool}: dá para julgar a falta?
 
-    def partes(self):
-        return [p for p in (self.cabeca, self.tronco) if p is not None]
-
+    @property
     def caixa(self):
-        """Caixa que envolve todas as partes detectadas."""
-        caixas = [p.caixa for p in self.partes()]
-        return (min(c[0] for c in caixas), min(c[1] for c in caixas), max(c[2] for c in caixas), max(c[3] for c in caixas))
+        return self.corpo.caixa
 
-    def infracoes(self):
-        """{tipo: confiança} das infrações visíveis neste frame."""
-        return {p.infracao: p.confianca for p in self.partes() if p.infracao}
+    @property
+    def confianca(self):
+        return self.corpo.confianca
+
+    def epis(self):
+        return [p for p in (self.capacete, self.colete) if p is not None]
+
+    def estado(self, tipo):
+        """ok (achou o EPI), ausente (não achou e dava para ver) ou desconhecido (não dá para julgar)."""
+        parte = self.capacete if tipo == TIPO_CAPACETE else self.colete
+        if parte is not None:
+            return OK
+        return AUSENTE if self.avaliavel[tipo] else DESCONHECIDO
 
     def ancoras(self):
-        return {
-            nome: _centro(parte.caixa)
-            for nome, parte in ((CABECA, self.cabeca), (TRONCO, self.tronco))
-            if parte is not None
-        }
+        """Pontos para o rastreador: o centro e o topo da caixa (se um mudar de forma, o outro ainda casa)."""
+        x1, y1, x2, y2 = self.caixa
+        return {"centro": _centro(self.caixa), "topo": ((x1 + x2) // 2, y1)}
 
 
-def montar_pessoas(deteccoes, confianca_minima):
-    """Recebe [(nome_classe, confianca, caixa)] e agrupa cabeça + tronco do mesmo corpo em `Pessoa`s.
+def _ligar(pessoas, epis, afinidade, atributo):
+    """Entrega cada EPI à pessoa que mais combina com ele, no máximo um por pessoa e uma pessoa por EPI."""
+    pares = sorted(
+        (custo, i, j)
+        for i, pessoa in enumerate(pessoas)
+        for j, epi in enumerate(epis)
+        if (custo := afinidade(pessoa.caixa, epi.caixa)) is not None
+    )
+    pessoas_usadas, epis_usados = set(), set()
+    for _, i, j in pares:
+        if i not in pessoas_usadas and j not in epis_usados:
+            setattr(pessoas[i], atributo, epis[j])
+            pessoas_usadas.add(i)
+            epis_usados.add(j)
 
-    Toda cabeça detectada (de capacete ou sem) é uma pessoa. Cada tronco vai para a cabeça mais bem alinhada (ver
-    `_afinidade`), e uma caixa de tronco nunca serve a duas pessoas: é assim que duas pessoas lado a lado não
-    misturam o colete.
+
+def _limiar_epi(confianca_epi, quem):
+    """`confianca_epi` é um número (vale para os dois EPIs) ou {CAPACETE: x, COLETE: y}."""
+    return confianca_epi[quem] if isinstance(confianca_epi, dict) else confianca_epi
+
+
+def montar_pessoas(deteccoes, confianca_pessoa, confianca_epi, altura_minima):
+    """Recebe [(nome_classe, confianca, caixa)] e devolve as `Pessoa`s, cada uma com o capacete e o colete achados.
+
+    Capacete ou colete que não está dentro da caixa de nenhuma pessoa é ignorado: sem pessoa não há quem avaliar.
+    Uma pessoa só é julgável se for grande o bastante (`altura_minima`, em px) e, para o capacete, se a cabeça não
+    estiver cortada pela borda de cima do quadro; do contrário o estado é "desconhecido" e nada é cobrado dela.
     """
-    cabecas, troncos = [], []
+    corpos, capacetes, coletes = [], [], []
     for nome, confianca, caixa in deteccoes:
-        item = interpretar(nome)
-        if item is None or confianca < confianca_minima:
-            continue
-        parte, infracao = item
-        (cabecas if parte == CABECA else troncos).append(Parte(nome, infracao, confianca, tuple(caixa)))
+        quem = papel(nome)
+        parte = Parte(nome, confianca, tuple(caixa))
+        if quem == PESSOA and confianca >= confianca_pessoa:
+            corpos.append(parte)
+        elif quem == CAPACETE and confianca >= _limiar_epi(confianca_epi, CAPACETE):
+            capacetes.append(parte)
+        elif quem == COLETE and confianca >= _limiar_epi(confianca_epi, COLETE):
+            coletes.append(parte)
 
-    pessoas = [Pessoa(cabeca=c) for c in _sem_duplicadas(cabecas)]
-
-    candidatos = []
-    for i, pessoa in enumerate(pessoas):
-        for j, tronco in enumerate(troncos):
-            afinidade = _afinidade(pessoa.cabeca.caixa, tronco.caixa)
-            if afinidade is not None:
-                candidatos.append((*afinidade, i, j))
-    candidatos.sort()  # melhores pares primeiro: (nível, custo, cabeça, tronco)
-
-    usados = set()  # troncos já ligados a uma cabeça
-    duplicados = set()  # troncos que são só uma segunda caixa de um tronco já ligado
-
-    def ligar(nivel):
-        for n, _, i, j in candidatos:
-            if n == nivel and pessoas[i].tronco is None and j not in usados and j not in duplicados:
-                pessoas[i].tronco = troncos[j]
-                usados.add(j)
-
-    def repete_um_ligado(j):
-        return any(_sobreposicao(troncos[j].caixa, troncos[k].caixa) >= SOBREPOSICAO_MAXIMA for k in usados)
-
-    ligar(0)
-    # Antes de aceitar pares "só plausíveis", a segunda caixa de um tronco já ligado sai de cena: senão ela
-    # poderia ser entregue à cabeça de um vizinho, que passaria a ser acusado de um colete que ninguém detectou.
-    duplicados.update(j for j in range(len(troncos)) if j not in usados and repete_um_ligado(j))
-    ligar(1)
-
-    # Tronco que sobrou: ou é uma segunda caixa de um tronco já atribuído (descarta) ou é alguém cuja cabeça não
-    # foi detectada / está fora do enquadramento (vira uma pessoa só com tronco).
-    aceitos = [troncos[j] for j in usados]
-    for j in sorted(set(range(len(troncos))) - usados - duplicados, key=lambda j: troncos[j].confianca, reverse=True):
-        if all(_sobreposicao(troncos[j].caixa, outro.caixa) < SOBREPOSICAO_MAXIMA for outro in aceitos):
-            pessoas.append(Pessoa(tronco=troncos[j]))
-            aceitos.append(troncos[j])
+    pessoas = []
+    for corpo in corpos:
+        grande = corpo.caixa[3] - corpo.caixa[1] >= altura_minima
+        pessoas.append(
+            Pessoa(corpo, {TIPO_CAPACETE: grande and corpo.caixa[1] > MARGEM_TOPO, TIPO_COLETE: grande})
+        )
+    _ligar(pessoas, _sem_duplicadas(capacetes), _afinidade_capacete, "capacete")
+    _ligar(pessoas, _sem_duplicadas(coletes), _afinidade_colete, "colete")
     return pessoas
 
 
 # ==========================================
 # ALERTAS
 # ==========================================
-# numero: posição por ordem de chegada entre quem está em cena | pessoa: `Pessoa` | infracoes: tipos visíveis agora
+# numero: posição por ordem de chegada entre quem está em cena | pessoa: `Pessoa`
+# infracoes: tipos em infração CONFIRMADA (ausência contínua pelo tempo de confirmação)
 PessoaEmCena = namedtuple("PessoaEmCena", "numero pessoa infracoes")
 # alertas: [(tipo, confianca, numero)] a enviar agora | pessoas: [PessoaEmCena] vistas neste frame
 # situacao: ((numero, (tipos em infração)), ...) de todos em cena; só muda quando entra/sai alguém ou muda a infração
@@ -188,22 +211,43 @@ Cena = namedtuple("Cena", "alertas pessoas situacao")
 
 
 class AlertasPorPessoa:
-    """Rastreia as pessoas e decide quais infrações viram alerta: um por pessoa e tipo, por episódio.
+    """Rastreia as pessoas e decide quais faltas de EPI viram alerta: um por pessoa e tipo, por episódio.
 
-    Um episódio termina quando a infração some por `tempo_ausente` segundos (ou a pessoa sai de cena); a mesma
-    infração só gera novo alerta se um novo episódio começar ou, se configurado, a cada `intervalo_realerta`.
+    A falta só conta depois de `tempo_confirmacao` segundos contínuos. Um episódio termina quando a falta some por
+    `tempo_ausente` segundos (ou a pessoa sai de cena); a mesma falta só gera novo alerta se um novo episódio
+    começar ou, se configurado, a cada `intervalo_realerta`.
     """
 
-    def __init__(self, intervalo_realerta, tempo_ausente, dist_maxima, tempo_presente, confianca_minima):
+    def __init__(
+        self, intervalo_realerta, tempo_ausente, dist_maxima, tempo_presente,
+        confianca_pessoa, confianca_epi, altura_minima, tempo_confirmacao,
+    ):
         # intervalo_realerta: segundos para repetir o alerta de quem continua em infração (0 = nunca repete)
         # tempo_ausente: segundos até o rastreador esquecer a pessoa (evita alerta repetido se a detecção piscar)
         # tempo_presente: segundos sem aparecer até a pessoa deixar de contar como "em cena" (numeração e contagem)
+        # tempo_confirmacao: segundos de falta contínua antes de acusar (0 = acusa no primeiro quadro)
         self.intervalo_realerta = intervalo_realerta
-        self.confianca_minima = confianca_minima
         self._tempo_ausente = tempo_ausente
         self._tempo_presente = tempo_presente
+        self._confianca_pessoa = confianca_pessoa
+        self._confianca_epi = confianca_epi
+        self._altura_minima = altura_minima
+        self._confirmacao = tempo_confirmacao
         self._rastreador = Rastreador(tempo_ausente, dist_maxima)
-        self._episodios = {}  # (id_pessoa, tipo) -> [instante em que a infração foi vista, instante do alerta]
+        self._sem_epi = {}  # (id_pessoa, tipo) -> [desde quando falta sem parar, última vez em que se viu faltando]
+        self._episodios = {}  # (id_pessoa, tipo) -> [instante em que a falta foi vista, instante do alerta]
+
+    def _confirmada(self, chave, pessoa, tipo, agora):
+        """True se a pessoa está sem o EPI de forma contínua há tempo suficiente."""
+        if pessoa.estado(tipo) != AUSENTE:  # tem o EPI ou não dá para julgar: recomeça a contagem
+            self._sem_epi.pop(chave, None)
+            return False
+        corrida = self._sem_epi.get(chave)
+        # Se a pessoa ficou um tempo sem ser vista, o que valia antes não conta: nova contagem.
+        if corrida is None or agora - corrida[1] > self._confirmacao + 1.0:
+            corrida = self._sem_epi[chave] = [agora, agora]
+        corrida[1] = agora
+        return agora - corrida[0] >= self._confirmacao
 
     def filtrar(self, deteccoes, agora):
         """Recebe [(nome_classe, confianca, caixa)] do frame e devolve uma `Cena`.
@@ -214,7 +258,7 @@ class AlertasPorPessoa:
 
         Chame a cada frame, mesmo sem detecções, para o rastreamento perceber quem saiu de cena.
         """
-        pessoas = montar_pessoas(deteccoes, self.confianca_minima)
+        pessoas = montar_pessoas(deteccoes, self._confianca_pessoa, self._confianca_epi, self._altura_minima)
         ids = self._rastreador.atualizar([p.ancoras() for p in pessoas], agora)
 
         em_cena = self._rastreador.presentes(agora, self._tempo_presente)
@@ -222,23 +266,28 @@ class AlertasPorPessoa:
 
         alertas, vistas = [], []
         for id_pessoa, pessoa in zip(ids, pessoas):
-            infracoes = pessoa.infracoes()
-            for tipo, confianca in infracoes.items():
+            confirmadas = []
+            for tipo in (TIPO_CAPACETE, TIPO_COLETE):
+                if not self._confirmada((id_pessoa, tipo), pessoa, tipo, agora):
+                    continue
+                confirmadas.append(tipo)
                 episodio = self._episodios.get((id_pessoa, tipo))
                 if episodio is None or agora - episodio[0] > self._tempo_ausente:
-                    novo = True  # primeira vez, ou a infração tinha sumido por tempo suficiente para ser outra
+                    novo = True  # primeira vez, ou a falta tinha sumido por tempo suficiente para ser outra
                 else:
                     novo = self.intervalo_realerta > 0 and agora - episodio[1] >= self.intervalo_realerta
                 if novo:
                     self._episodios[(id_pessoa, tipo)] = [agora, agora]
-                    alertas.append((tipo, confianca, numero_de[id_pessoa]))
+                    alertas.append((tipo, pessoa.confianca, numero_de[id_pessoa]))
                 else:
                     episodio[0] = agora
-            vistas.append(PessoaEmCena(numero_de[id_pessoa], pessoa, tuple(sorted(infracoes))))
+            vistas.append(PessoaEmCena(numero_de[id_pessoa], pessoa, tuple(sorted(confirmadas))))
 
         # Esquece quem o rastreador já descartou, para a memória não crescer com o tempo.
-        for chave in [k for k in self._episodios if k[0] not in self._rastreador.objetos]:
-            del self._episodios[chave]
+        vivos = self._rastreador.objetos
+        for tabela in (self._episodios, self._sem_epi):
+            for chave in [k for k in tabela if k[0] not in vivos]:
+                del tabela[chave]
 
         situacao = tuple(
             (
@@ -259,16 +308,19 @@ class AlertasPorPessoa:
 # ==========================================
 # OCORRÊNCIA (o que é enviado à API)
 # ==========================================
-def _estado_epi(parte, tipo, numero, novos):
-    """{estado, confianca, novo} de um EPI: 'ausente' | 'ok' | 'desconhecido' (parte não detectada)."""
-    if parte is None:
-        return {"estado": "desconhecido", "confianca": None, "novo": False}
-    ausente = parte.infracao is not None
-    return {
-        "estado": "ausente" if ausente else "ok",
-        "confianca": round(parte.confianca, 4),
-        "novo": ausente and (tipo, numero) in novos,
-    }
+def _estado_epi(pessoa, tipo, confirmada, numero, novos):
+    """{estado, confianca, novo} de um EPI.
+
+    ok: a confiança é a do capacete/colete achado. ausente: não existe detecção para medir, então vai a confiança
+    da PESSOA (a certeza de que há alguém ali sem o EPI). desconhecido: não dá para julgar ou a falta ainda não
+    foi confirmada.
+    """
+    parte = pessoa.capacete if tipo == TIPO_CAPACETE else pessoa.colete
+    if parte is not None:
+        return {"estado": OK, "confianca": round(parte.confianca, 4), "novo": False}
+    if confirmada:
+        return {"estado": AUSENTE, "confianca": round(pessoa.confianca, 4), "novo": (tipo, numero) in novos}
+    return {"estado": DESCONHECIDO, "confianca": None, "novo": False}
 
 
 def ocorrencia_da_cena(cena, id_dispositivo, timestamp, severidade="high"):
@@ -282,11 +334,11 @@ def ocorrencia_da_cena(cena, id_dispositivo, timestamp, severidade="high"):
     pessoas = [
         {
             "numero": numero,
-            "caixa": list(pessoa.caixa()),
-            "capacete": _estado_epi(pessoa.cabeca, TIPO_CAPACETE, numero, novos),
-            "colete": _estado_epi(pessoa.tronco, TIPO_COLETE, numero, novos),
+            "caixa": list(pessoa.caixa),
+            "capacete": _estado_epi(pessoa, TIPO_CAPACETE, TIPO_CAPACETE in infracoes, numero, novos),
+            "colete": _estado_epi(pessoa, TIPO_COLETE, TIPO_COLETE in infracoes, numero, novos),
         }
-        for numero, pessoa, _ in sorted(cena.pessoas, key=lambda p: p.numero)
+        for numero, pessoa, infracoes in sorted(cena.pessoas, key=lambda p: p.numero)
     ]
     return {
         "id_dispositivo": id_dispositivo,

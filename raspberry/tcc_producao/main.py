@@ -4,60 +4,36 @@ import signal
 import sys
 import threading
 import time
+from pathlib import Path
 
 import cv2
 
 import cliente_api
 import config
-from deteccao import ROTULOS, AlertasPorPessoa, classificar, ocorrencia_da_cena
+from deteccao import ROTULOS, AlertasPorPessoa, ocorrencia_da_cena, papeis_faltando
+from metricas import (Metricas, RegistroCsv, RegistroExecucao, Resultados, Telemetria, ler_temperatura,
+                      ler_throttling, linhas_janela, linhas_terminal)
+from reinicio import executar_reinicio, reinicio_devido
+from sirene import Sirene
 
 # ==========================================
-# SIRENE (GPIO) — simulada quando não está numa Raspberry
+# SIRENE (GPIO) — simulada quando não está numa Raspberry (ver sirene.py)
 # ==========================================
-try:
-    import RPi.GPIO as GPIO
-
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setup(config.PINO_SIRENE, GPIO.OUT)
-    GPIO.output(config.PINO_SIRENE, GPIO.LOW)
-    GPIO_ATIVO = True
-    print("[HARDWARE] RPi.GPIO carregado. Relé da sirene conectado.")
-except (ImportError, RuntimeError):
-    GPIO_ATIVO = False
-    print("[HARDWARE] RPi.GPIO indisponível: a sirene será simulada no terminal.")
-
-_trava_sirene = threading.Lock()
-
-
-def _tocar_sirene():
-    with _trava_sirene:
-        if GPIO_ATIVO:
-            GPIO.output(config.PINO_SIRENE, GPIO.HIGH)
-            time.sleep(config.DURACAO_SIRENE)
-            GPIO.output(config.PINO_SIRENE, GPIO.LOW)
-        else:
-            print("[SIRENE SIMULADA] ligada")
-            time.sleep(config.DURACAO_SIRENE)
-            print("[SIRENE SIMULADA] desligada")
-
-
-def acionar_sirene():
-    """Dispara a sirene sem bloquear a inferência; se já estiver tocando, ignora."""
-    if not _trava_sirene.locked():
-        threading.Thread(target=_tocar_sirene, daemon=True).start()
+sirene = Sirene(config.PINO_SIRENE, config.DURACAO_SIRENE, ativa_em_baixo=config.SIRENE_ATIVA_EM_BAIXO)
 
 
 # ==========================================
 # THREADS DE APOIO
 # ==========================================
 parar = threading.Event()
+telemetria = Telemetria()  # o heartbeat leva este retrato da placa ao painel "Sistema"
 
 
 def thread_heartbeat():
     """Avisa a API que a placa está viva; só imprime quando o estado muda."""
     online = None
     while not parar.is_set():
-        ok = cliente_api.enviar_heartbeat()
+        ok = cliente_api.enviar_heartbeat(telemetria.instantaneo())
         if ok != online:
             print("[REDE] Heartbeat OK: placa online na API." if ok else "[REDE] Heartbeat falhou: API inalcançável.")
             online = ok
@@ -80,7 +56,7 @@ def thread_captura(fila_frames):
             cap = cv2.VideoCapture(config.CAMERA_SOURCE)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # menos atraso em streams RTSP
             if not cap.isOpened():
-                print(f"[VÍDEO] Não foi possível abrir a câmera ({config.CAMERA_SOURCE}). Nova tentativa em 3s...")
+                print(f"[VÍDEO] Não foi possível abrir a câmera ({config.ocultar_credenciais(config.CAMERA_SOURCE)}). Nova tentativa em 3s...")
                 parar.wait(3)
                 continue
             print("[VÍDEO] Câmera conectada.")
@@ -93,12 +69,14 @@ def thread_captura(fila_frames):
             parar.wait(2)
             continue
 
+        t_captura = time.perf_counter()  # marco zero da latência "borda -> alerta"
         frame = cv2.resize(frame, (config.LARGURA_FRAME, config.ALTURA_FRAME))
+        ms_redim = (time.perf_counter() - t_captura) * 1000
         try:
             fila_frames.get_nowait()  # descarta o frame antigo
         except queue.Empty:
             pass
-        fila_frames.put(frame)
+        fila_frames.put((frame, t_captura, ms_redim))
 
     if cap is not None:
         cap.release()
@@ -107,11 +85,12 @@ def thread_captura(fila_frames):
 # ==========================================
 # PRINCIPAL
 # ==========================================
-def desenhar(frame, nome, confianca, caixa):
-    x1, y1, x2, y2 = caixa
-    cor = (0, 0, 255) if classificar(nome) else (0, 255, 0)  # vermelho = infração
-    cv2.rectangle(frame, (x1, y1), (x2, y2), cor, 2)
-    cv2.putText(frame, f"{nome} {confianca:.2f}", (x1, max(15, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, cor, 2)
+def desenhar_epi(frame, parte):
+    """Capacete ou colete que o modelo achou, em amarelo fino: mostra o que foi aceito como 'presente'."""
+    x1, y1, x2, y2 = parte.caixa
+    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 1)
+    cv2.putText(frame, f"{parte.nome} {parte.confianca:.2f}", (x1, min(frame.shape[0] - 4, y2 + 14)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
 
 
 def descrever(numero, infracoes):
@@ -119,36 +98,67 @@ def descrever(numero, infracoes):
     return f"Pessoa {numero}: " + (", ".join(ROTULOS.get(t, t) for t in infracoes) or "ok")
 
 
-def _cracha(frame, texto, x, y, cor):
-    """Faixa colorida com texto branco, com o canto superior esquerdo em (x, y), mantida dentro do frame."""
-    (largura, altura), _ = cv2.getTextSize(texto, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
-    alto, largo = frame.shape[:2]
-    x = max(0, min(x, largo - largura - 8))
-    y = max(0, min(y, alto - altura - 8))
-    cv2.rectangle(frame, (x, y), (x + largura + 8, y + altura + 8), cor, -1)
-    cv2.putText(frame, texto, (x + 4, y + altura + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
+def _cracha(frame, linhas, x, y, cor):
+    """Faixas coloridas com texto branco (uma por linha), com o canto superior esquerdo em (x, y), dentro do frame.
 
-
-def desenhar_pessoa(frame, numero, pessoa, infracoes):
-    """Crachá na cabeça, crachá curto no tronco e uma linha ligando os dois (vai na foto enviada à API).
-
-    O crachá do tronco fica na vertical da cabeça, não no canto da caixa: o modelo às vezes desenha um colete largo
-    cobrindo duas pessoas, e assim cada uma aparece marcada sobre o próprio corpo.
+    Empilhado em linhas curtas para caber na largura de uma pessoa: duas pessoas lado a lado não escondem o crachá uma
+    da outra, como acontecia com uma frase só.
     """
-    cor = (0, 0, 255) if infracoes else (0, 160, 0)
-    cabeca, tronco = pessoa.cabeca, pessoa.tronco
-    if cabeca is None:
-        _cracha(frame, descrever(numero, infracoes), tronco.caixa[0], tronco.caixa[1], cor)
-        return
+    fonte, escala = cv2.FONT_HERSHEY_SIMPLEX, 0.5
+    medidas = [cv2.getTextSize(linha, fonte, escala, 1)[0] for linha in linhas]
+    largura = max(w for w, _ in medidas) + 8
+    altura_linha = max(h for _, h in medidas) + 8
+    alto, largo = frame.shape[:2]
+    total = altura_linha * len(linhas)
+    if y - total >= 0:  # cabe acima da caixa: não cobre a cabeça, onde fica o capacete
+        y -= total
+    x = max(0, min(x, largo - largura))
+    y = max(0, min(y, alto - total))
+    for i, (linha, (_, h)) in enumerate(zip(linhas, medidas)):
+        topo = y + i * altura_linha
+        cv2.rectangle(frame, (x, topo), (x + largura, topo + altura_linha), cor, -1)
+        cv2.putText(frame, linha, (x + 4, topo + h + 3), fonte, escala, (255, 255, 255), 1, cv2.LINE_AA)
 
-    hx1, hy1, hx2, hy2 = cabeca.caixa
-    _cracha(frame, descrever(numero, infracoes), hx1, hy1, cor)
-    if tronco is not None:
-        tx1, ty1, tx2, _ = tronco.caixa
-        meio = (hx1 + hx2) // 2
-        alvo = min(max(meio, tx1), tx2)  # a vertical da cabeça, mantida dentro da caixa do tronco
-        cv2.line(frame, (meio, hy2), (alvo, ty1), (0, 255, 255), 1)  # amarelo: liga a cabeça ao tronco dela
-        _cracha(frame, f"Pessoa {numero}", alvo - 38, ty1, cor)
+
+def desenhar_pessoa(frame, numero, pessoa, infracoes, avaliando=True):
+    """Caixa da pessoa (vermelha se há infração confirmada, verde se não) com o crachá dela e o EPI que ela tem.
+
+    Vai na foto enviada à API: quem olha vê a pessoa inteira, o número dela e o que o modelo achou nela.
+    `avaliando=False` (modelo sem capacete/colete, só em testes) desenha em cinza e NÃO diz "ok": o EPI nem foi visto.
+    """
+    x1, y1, x2, y2 = pessoa.caixa
+    if not avaliando:
+        cor, linhas = (128, 128, 128), [f"Pessoa {numero}", "EPI nao avaliado"]
+    elif infracoes:
+        cor, linhas = (0, 0, 255), [f"Pessoa {numero}", *(ROTULOS.get(t, t) for t in infracoes)]
+    else:
+        cor, linhas = (0, 160, 0), [f"Pessoa {numero}", "ok"]
+    cv2.rectangle(frame, (x1, y1), (x2, y2), cor, 2)
+    for epi in pessoa.epis():
+        desenhar_epi(frame, epi)
+    _cracha(frame, linhas, x1, y1, cor)
+
+
+def registrar_resultados(resultados, cena, inferencia_ms, borda_decisao_ms):
+    """Alimenta os resultados da tela Sistema com o que o quadro mostrou (ver metricas.Resultados)."""
+    por_classe = {"capacete": [], "colete": [], "ausencia": []}
+    for _, pessoa, infracoes in cena.pessoas:
+        if pessoa.capacete is not None:
+            por_classe["capacete"].append(pessoa.capacete.confianca)
+        if pessoa.colete is not None:
+            por_classe["colete"].append(pessoa.colete.confianca)
+        if infracoes:  # o modelo não detecta a falta: vale a confiança da pessoa em infração confirmada
+            por_classe["ausencia"].append(pessoa.confianca)
+    for classe, valores in por_classe.items():
+        if valores:
+            resultados.amostrar_confianca(classe, max(valores))
+    resultados.registrar_quadro(len(cena.pessoas), inferencia_ms, borda_decisao_ms)
+
+
+def enviar_ocorrencia(jpeg, ocorrencia, t_captura, metricas):
+    """Envia a ocorrência (em thread) e mede o tempo desde que a câmera entregou o quadro até a API confirmar."""
+    if cliente_api.processar_ocorrencia(jpeg, ocorrencia) == cliente_api.OK:
+        metricas.registrar("borda_api", (time.perf_counter() - t_captura) * 1000)
 
 
 def main():
@@ -162,8 +172,27 @@ def main():
         print(f"[ERRO] Não foi possível carregar o modelo: {erro}")
         return 1
 
+    # A infração agora é a ausência de EPI dentro da caixa de uma pessoa: um modelo sem as três classes (ex.: o antigo,
+    # com 'Sem_Capacete') nunca alertaria. Melhor recusar na partida do que ficar mudo.
+    faltando = papeis_faltando(model.names)
+    if faltando:
+        print(f"[ERRO] O modelo não tem classe de: {', '.join(faltando)}. Classes encontradas: {list(model.names.values())}")
+        print("       Este sistema precisa de um modelo com pessoa, capacete e colete (ver README).")
+        return 1
+    print(f"[MODELO] Classes: {list(model.names.values())}")
+
+    if sirene.preparar():
+        nivel = "BAIXO" if config.SIRENE_ATIVA_EM_BAIXO else "ALTO"
+        print(f"[HARDWARE] Sirene no pino físico {config.PINO_SIRENE} (liga em nível {nivel}), {config.DURACAO_SIRENE:g}s por alerta.")
+    else:
+        print("[HARDWARE] RPi.GPIO indisponível: a sirene será simulada no terminal.")
+
     if not config.EDGE_API_KEY:
         print("[AVISO] EDGE_API_KEY vazia: a API só aceitará a placa se estiver em modo de desenvolvimento.")
+
+    if config.CONFIANCA_PESSOA < 0.5:
+        print("[AVISO] CONFIANCA_PESSOA abaixo de 0,50: o banco da API recusa infração com confiança menor que 0,50 "
+              "(erro 500) e esses alertas ficariam presos na fila offline.")
 
     # Faz o encerramento por systemd/kill passar pelo mesmo caminho do Ctrl+C.
     signal.signal(signal.SIGTERM, lambda *_: parar.set())
@@ -177,21 +206,40 @@ def main():
         config.RASTREADOR_TEMPO_AUSENTE,
         config.RASTREADOR_DIST_MAXIMA,
         config.RASTREADOR_TEMPO_PRESENTE,
-        config.CONFIANCA_MINIMA,
+        config.CONFIANCA_PESSOA,
+        config.LIMIARES_EPI,
+        config.ALTURA_MINIMA_PESSOA,
+        config.TEMPO_CONFIRMACAO,
     )
+    confianca_modelo = config.CONFIANCA_MODELO
     situacao_anterior = ()  # só imprime a situação da cena quando ela muda
     repeticao = f"repete a cada {config.TEMPO_REALERTA:g}s" if config.TEMPO_REALERTA > 0 else "sem repetição"
-    print(f"[ALERTAS] Um por pessoa em infração ({repeticao}); esquece quem some por {config.RASTREADOR_TEMPO_AUSENTE:g}s.")
+    print(f"[ALERTAS] Falta de EPI confirmada após {config.TEMPO_CONFIRMACAO:g}s contínuos; um alerta por pessoa ({repeticao}); "
+          f"esquece quem some por {config.RASTREADOR_TEMPO_AUSENTE:g}s.")
+
+    metricas = Metricas()
+    registro = RegistroExecucao(config.ARQUIVO_ESTADO)
+    resultados = Resultados()  # confiança por classe e desempenho por carga de cena (tela Sistema)
+    telemetria.configurar(registro, Path(config.MODELO_PATH).name, resultados, config.REINICIAR_APOS_HORAS,
+                          config.ARQUIVO_VALIDACAO)
+    envios, reiniciar = [], False  # envios em andamento (esperados antes de reiniciar) e pedido de reinício
+    csv_metricas = RegistroCsv(config.ARQUIVO_METRICAS)
+    if registro.anterior_caiu:
+        print("[SISTEMA] A execução anterior não terminou normalmente (queda de energia, travamento ou kill): "
+              "contada como queda inesperada.")
+    ultimo_resumo, faixa = time.perf_counter(), None
     print("Monitoramento iniciado. Pressione Ctrl+C para sair.")
 
     try:
         while not parar.is_set():
             try:
-                frame = fila.get(timeout=1)
+                frame, t_captura, ms_redim = fila.get(timeout=1)
             except queue.Empty:
                 continue  # câmera ainda conectando; espera sem gastar CPU
 
-            resultado = model(frame, verbose=False, conf=config.CONFIANCA_MINIMA)[0]
+            t_inicio = time.perf_counter()
+            resultado = model(frame, verbose=False, conf=confianca_modelo)[0]
+            velocidade = resultado.speed  # ms de pré-processamento, inferência e NMS medidos pelo próprio Ultralytics
 
             deteccoes = []
             for box in resultado.boxes:
@@ -200,12 +248,25 @@ def main():
                 deteccoes.append((nome, confianca, tuple(map(int, box.xyxy[0]))))
 
             # Chamado a cada frame (mesmo sem detecções) para o rastreador perceber quem saiu de cena.
+            t_regras = time.perf_counter()
             cena = alertas.filtrar(deteccoes, time.monotonic())
+            t_decisao = time.perf_counter()
 
-            # Só desenha o que foi mantido: caixas duplicadas descartadas não poluem a foto de evidência.
+            ms_regras = (t_decisao - t_regras) * 1000
+            metricas.quadro()
+            metricas.registrar("redim", ms_redim)
+            metricas.registrar("pre", velocidade["preprocess"])
+            metricas.registrar("inf", velocidade["inference"])
+            metricas.registrar("pos", velocidade["postprocess"])
+            metricas.registrar("regras", ms_regras)
+            metricas.registrar("total", ms_redim + velocidade["preprocess"] + velocidade["inference"]
+                               + velocidade["postprocess"] + ms_regras)
+            metricas.registrar("espera", (t_inicio - t_captura) * 1000)
+            metricas.registrar("borda_decisao", (t_decisao - t_captura) * 1000)
+            registrar_resultados(resultados, cena, velocidade["inference"], (t_decisao - t_captura) * 1000)
+
+            # Só desenha o que foi mantido: caixas duplicadas ou sem dono não poluem a foto de evidência.
             for numero, pessoa, infracoes in cena.pessoas:
-                for parte in pessoa.partes():
-                    desenhar(frame, parte.nome, parte.confianca, parte.caixa)
                 desenhar_pessoa(frame, numero, pessoa, infracoes)
 
             if cena.situacao != situacao_anterior:
@@ -217,29 +278,64 @@ def main():
                     print("[CENA] ninguém em cena")
 
             if cena.alertas:
-                acionar_sirene()
+                sirene.acionar()
+                metricas.registrar("borda_sirene", (time.perf_counter() - t_captura) * 1000)
                 sucesso, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 if sucesso:
                     for tipo, conf, numero in cena.alertas:
                         print(f"[ALERTA] {ROTULOS.get(tipo, tipo)}: pessoa {numero}, confiança {conf:.2f}")
                     # A cena inteira vai numa única requisição: uma foto, todas as pessoas e o que é novo.
                     ocorrencia = ocorrencia_da_cena(cena, config.ID_DISPOSITIVO, cliente_api.agora_utc())
-                    threading.Thread(
-                        target=cliente_api.processar_ocorrencia, args=(buffer.tobytes(), ocorrencia), daemon=True
-                    ).start()
+                    envio = threading.Thread(
+                        target=enviar_ocorrencia, args=(buffer.tobytes(), ocorrencia, t_captura, metricas), daemon=True
+                    )
+                    envio.start()
+                    envios[:] = [e for e in envios if e.is_alive()] + [envio]
+
+            # Resumo periódico no terminal e no CSV (a tabela de latência e processamento do TCC).
+            if config.INTERVALO_METRICAS > 0 and time.perf_counter() - ultimo_resumo >= config.INTERVALO_METRICAS:
+                ultimo_resumo = time.perf_counter()
+                temperatura = ler_temperatura()
+                resumo = metricas.fechar_intervalo(temperatura)
+                resultados.registrar_temperatura(temperatura)
+                limitacao = ler_throttling()
+                for linha in linhas_terminal(resumo, registro, limitacao):
+                    print(linha)
+                csv_metricas.gravar(resumo, registro, limitacao, cliente_api.agora_utc())
+                telemetria.atualizar(resumo)
+                registro.sinal()  # "sinal de vida": se o programa cair, a próxima partida sabe até quando viveu
+                faixa = linhas_janela(resumo)
+
+            if reinicio_devido(registro.ligado_ha(), config.REINICIAR_APOS_HORAS, not cena.pessoas,
+                               config.REINICIO_TOLERANCIA_S):
+                print(f"[REINÍCIO] {config.REINICIAR_APOS_HORAS:g} h de operação: reinício programado do turno.")
+                reiniciar = True
+                break
 
             if config.MOSTRAR_JANELA:
-                cv2.imshow("TCC - Visão Computacional na Borda", frame)
+                vista = frame  # a faixa de métricas só vai na tela, nunca na foto de evidência (já codificada acima)
+                for i, texto in enumerate(faixa or []):
+                    cv2.putText(vista, texto, (8, 20 + 18 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
+                cv2.imshow("TCC - Visão Computacional na Borda", vista)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
     except KeyboardInterrupt:
         pass
     finally:
+        registro.encerrar("reinicio_programado" if reiniciar else None)
+        geral = metricas.resumo_geral()
+        if geral["total"]:
+            print(f"\n[RESUMO] {metricas.quadros_total} quadros | total médio {geral['total'][0]:.0f} ms "
+                  f"(p95 {geral['total'][1]:.0f}) | inferência média {geral['inf'][0]:.0f} ms | "
+                  f"FPS mínimo {metricas.fps_minimo or 0:.1f} | temperatura máx. {metricas.temp_max or 0:.0f} °C")
         parar.set()
-        if GPIO_ATIVO:
-            GPIO.cleanup()
+        sirene.encerrar()
         cv2.destroyAllWindows()
         print("\nSistema encerrado.")
+    if reiniciar:
+        for envio in envios:  # não perde um alerta que ainda está subindo para a API
+            envio.join(timeout=15)
+        executar_reinicio(config.REINICIO_MODO)
     return 0
 
 

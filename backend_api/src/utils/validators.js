@@ -185,6 +185,122 @@ function parseOccurrence(raw) {
   };
 }
 
+// ---------- telemetria da placa (vai junto do heartbeat) ----------
+
+// Campo -> [mínimo, máximo] aceito. Fora disso o campo é descartado: um número absurdo não pode sujar o painel.
+const TELEMETRY_NUMBERS = {
+  temperatura_c: [-40, 150],
+  temperatura_max_c: [-40, 150],
+  memoria_pct: [0, 100],
+  carga_cpu_pct: [0, 1000],
+  fps: [0, 1000],
+  fps_minimo: [0, 1000],
+  pre_ms: [0, 600000],
+  inferencia_ms: [0, 600000],
+  pos_ms: [0, 600000],
+  total_ms: [0, 600000],
+  total_p95_ms: [0, 600000],
+  borda_decisao_ms: [0, 600000],
+  borda_sirene_ms: [0, 600000],
+  borda_api_ms: [0, 600000],
+  ligado_s: [0, 31536000],
+  execucao: [0, 1000000],
+  reinicios_8h: [0, 1000000],
+  quedas_8h: [0, 1000000],
+  reinicios_programados_8h: [0, 1000000],
+  reinicio_programado_em_s: [0, 315360000],
+  reinicio_apos_h: [0, 8760],
+  temperatura_media_c: [-40, 150],
+  // confiança média por classe (%) e quantas amostras entraram na média
+  conf_capacete_pct: [0, 100],
+  conf_capacete_n: [0, 1000000000],
+  conf_colete_pct: [0, 100],
+  conf_colete_n: [0, 1000000000],
+  conf_ausencia_pct: [0, 100],
+  conf_ausencia_n: [0, 1000000000],
+};
+
+// Desempenho por quantidade de pessoas no quadro (chaves "1" a "4"; "4" = 4 ou mais).
+const CARGA_CENA_KEYS = ['1', '2', '3', '4'];
+const CARGA_CENA_NUMBERS = {
+  quadros: [0, 1000000000],
+  fps: [0, 1000],
+  inferencia_ms: [0, 600000],
+  borda_decisao_ms: [0, 600000],
+  temperatura_c: [-40, 150],
+};
+
+// Validação do modelo (mAP por classe), valores de 0 a 1.
+const VALIDATION_NUMBERS = ['precisao', 'recall', 'map50', 'map50_95'];
+const MAX_VALIDATION_CLASSES = 10;
+
+const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const inRange = (value, min, max) => typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
+const round2 = (value) => Math.round(value * 100) / 100;
+const safeText = (value, max) =>
+  typeof value === 'string' ? value.replace(/[^\p{L}\p{N}._\- ]/gu, '').trim().slice(0, max) : '';
+
+function parseCargaCena(raw) {
+  if (!isPlainObject(raw)) return null;
+  const out = {};
+  for (const key of CARGA_CENA_KEYS) {
+    if (!isPlainObject(raw[key])) continue;
+    const group = {};
+    for (const [field, [min, max]] of Object.entries(CARGA_CENA_NUMBERS)) {
+      if (inRange(raw[key][field], min, max)) group[field] = round2(raw[key][field]);
+    }
+    if (Object.keys(group).length > 0) out[key] = group;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function parseValidation(raw) {
+  if (!isPlainObject(raw) || !isPlainObject(raw.classes)) return null;
+  const classes = {};
+  for (const [name, values] of Object.entries(raw.classes).slice(0, MAX_VALIDATION_CLASSES)) {
+    const label = safeText(name, 30);
+    if (!label || !isPlainObject(values)) continue;
+    const metrics = {};
+    for (const field of VALIDATION_NUMBERS) {
+      if (inRange(values[field], 0, 1)) metrics[field] = Math.round(values[field] * 10000) / 10000;
+    }
+    if (Object.keys(metrics).length > 0) classes[label] = metrics;
+  }
+  if (Object.keys(classes).length === 0) return null;
+  const out = { classes };
+  const model = safeText(raw.modelo, 80);
+  const subset = safeText(raw.conjunto, 20);
+  if (model) out.modelo = model;
+  if (subset) out.conjunto = subset;
+  if (Number.isInteger(raw.imagens) && inRange(raw.imagens, 0, 1000000000)) out.imagens = raw.imagens;
+  return out;
+}
+
+/**
+ * Sanitiza o retrato da placa enviado no heartbeat. Nunca recusa o heartbeat: campo desconhecido, fora da faixa ou
+ * de tipo errado é simplesmente ignorado (a placa continua "online"). Devolve null se nada aproveitável chegou.
+ */
+function parseTelemetry(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const out = {};
+  for (const [key, [min, max]] of Object.entries(TELEMETRY_NUMBERS)) {
+    const value = raw[key];
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) continue;
+    out[key] = Math.round(value * 100) / 100;
+  }
+  if (typeof raw.limitacao === 'string' && /^0x[0-9a-fA-F]{1,8}$/.test(raw.limitacao.trim())) {
+    out.limitacao = raw.limitacao.trim().toLowerCase();
+  }
+  const modelo = safeText(raw.modelo, 80);
+  if (modelo) out.modelo = modelo;
+  const cargaCena = parseCargaCena(raw.carga_cena);
+  if (cargaCena) out.carga_cena = cargaCena;
+  const validacao = parseValidation(raw.validacao);
+  if (validacao) out.validacao = validacao;
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+
 module.exports = {
   SEVERITIES,
   STATUSES,
@@ -195,4 +311,5 @@ module.exports = {
   parseConfidence,
   parseTimestamp,
   parseOccurrence,
+  parseTelemetry,
 };

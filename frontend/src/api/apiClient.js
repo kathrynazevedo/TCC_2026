@@ -22,7 +22,9 @@ async function request(path, options = {}) {
   return response.json();
 }
 
-export const getViolations = async () => (await request('/violations')).data;
+// 1000 = máximo aceito pela API: o gráfico de semana/mês precisa de histórico além das 500 mais recentes.
+export const VIOLATIONS_LIMIT = 1000;
+export const getViolations = async () => (await request(`/violations?limit=${VIOLATIONS_LIMIT}`)).data;
 
 export const updateViolationStatus = (id, status) =>
   request(`/violations/${id}`, {

@@ -3,6 +3,7 @@ import { Cpu, Terminal } from "lucide-react";
 import { useEdgeStatus } from "@/api/queries";
 import { timeAgo } from "@/lib/format";
 import PageHeader from "@/components/common/PageHeader";
+import TelemetryGrid from "@/components/system/TelemetryGrid";
 import { cn } from "@/lib/utils";
 
 const EDGE_IP = import.meta.env.VITE_EDGE_IP; // opcional, só informativo
@@ -45,7 +46,7 @@ export default function System() {
         code="06"
         icon={Cpu}
         title="Sistema"
-        description="Diagnóstico da conexão entre a placa de borda (Raspberry Pi) e a API."
+        description="Diagnóstico da conexão e telemetria da placa de borda (Raspberry Pi): temperatura, desempenho e latência do alerta."
       />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -120,6 +121,8 @@ export default function System() {
           </div>
         </section>
       </div>
+
+      {!error && <TelemetryGrid telemetry={data?.telemetria} online={data?.online} />}
     </div>
   );
 }

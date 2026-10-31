@@ -1,9 +1,10 @@
 """Testes da lógica da borda (rodam em qualquer PC, sem câmera, modelo ou GPIO).
 
     python -m unittest discover -s tests -v      (a partir de raspberry/tcc_producao)
+
+O modelo tem 3 classes (pessoa, capacete, colete); a infração é a AUSÊNCIA do EPI dentro da caixa da pessoa.
 """
 import json
-import random
 import sys
 import tempfile
 import unittest
@@ -20,234 +21,270 @@ from rastreador import Rastreador  # noqa: E402
 
 CAP, COL = "no-helmet", "no-vest"
 
-# Caixas medidas na foto de um teste real (coordenadas do frame 640x480): o homem de capacete e sem colete, a mulher
-# sem capacete; o modelo desenhou um colete estreito sobre o homem e outro, largo, cobrindo os dois.
-HOMEM_CAPACETE = ("Capacete", 0.91, (185, 39, 400, 196))
-MULHER_SEM_CAPACETE = ("Sem_Capacete", 0.87, (469, 174, 640, 263))
-COLETE_ESTREITO = ("Sem_Colete", 0.83, (140, 312, 391, 479))
-COLETE_LARGO = ("Sem_Colete", 0.78, (154, 312, 640, 479))
-DUAS_PESSOAS = [HOMEM_CAPACETE, MULHER_SEM_CAPACETE, COLETE_ESTREITO, COLETE_LARGO]
 
-# Uma pessoa sozinha, parada, com o modelo desenhando duas caixas aninhadas na mesma cabeça.
-CABECA_LARGA = ("Sem_Capacete", 0.88, (15, 0, 460, 140))
-CABECA_ANINHADA = ("Sem_Capacete", 0.74, (185, 0, 465, 130))
-COLETE_1 = ("Sem_Colete", 0.85, (120, 290, 430, 400))
+# Quadro 640x480; pessoas em pé com 360 px de altura. Cada detecção é (nome da classe, confiança, caixa).
+def pessoa(x, y=40, largura=140, altura=360, conf=0.90):
+    return ("person", conf, (x, y, x + largura, y + altura))
 
 
-def novo(realerta=0.0, ausente=10.0, presente=3.0):
+def capacete(x, y=40, largura=140, conf=0.85):  # na região da cabeça da pessoa que começa em (x, y)
+    return ("helmet", conf, (x + 25, y - 2, x + largura - 25, y + 58))
+
+
+def colete(x, y=40, largura=140, conf=0.80):  # na região do tronco
+    return ("vest", conf, (x + 20, y + 90, x + largura - 20, y + 220))
+
+
+A, B, C = 60, 400, 230  # posições x de três pessoas lado a lado
+COM_TUDO = [pessoa(A), capacete(A), colete(A)]
+SEM_CAPACETE = [pessoa(B), colete(B)]
+SEM_COLETE = [pessoa(C), capacete(C)]
+SEM_NADA = [pessoa(B)]
+
+
+def novo(realerta=0.0, ausente=10.0, presente=3.0, confirmacao=1.0):
     return AlertasPorPessoa(
         intervalo_realerta=realerta, tempo_ausente=ausente, dist_maxima=150, tempo_presente=presente,
-        confianca_minima=0.70,
+        confianca_pessoa=0.50, confianca_epi=0.35, altura_minima=120, tempo_confirmacao=confirmacao,
     )
 
 
+def rodar(alertas, deteccoes, inicio, fim, fps=5):
+    """Alimenta o sistema com a mesma cena de `inicio` a `fim` (s); devolve [(instante, tipo, numero)] dos alertas."""
+    disparos = []
+    for f in range(int(inicio * fps), int(fim * fps)):
+        t = f / fps
+        for tipo, _, numero in alertas.filtrar(deteccoes, t).alertas:
+            disparos.append((t, tipo, numero))
+    return disparos
+
+
 class TestClasses(unittest.TestCase):
-    def test_classificar_aceita_variacoes_de_nome(self):
-        for nome in ("Sem_Capacete", "sem-capacete", "no-helmet", "No Helmet"):
-            self.assertEqual(deteccao.classificar(nome), "no-helmet", nome)
-        for nome in ("sem_colete", "Sem-Colete", "no-vest"):
-            self.assertEqual(deteccao.classificar(nome), "no-vest", nome)
+    def test_papel_aceita_variacoes_de_nome(self):
+        for nome in ("person", "Person", "pessoa", "Trabalhador"):
+            self.assertEqual(deteccao.papel(nome), deteccao.PESSOA, nome)
+        for nome in ("helmet", "Hard-Hat", "hardhat", "Capacete"):
+            self.assertEqual(deteccao.papel(nome), deteccao.CAPACETE, nome)
+        for nome in ("vest", "safety-vest", "Colete_Refletivo", "colete"):
+            self.assertEqual(deteccao.papel(nome), deteccao.COLETE, nome)
+        self.assertIsNone(deteccao.papel("Sem_Capacete"))
 
-    def test_classes_conformes_nao_sao_infracao(self):
-        for nome in ("Capacete", "Colete_Refletivo", "Pessoa", ""):
-            self.assertIsNone(deteccao.classificar(nome), nome)
+    def test_modelo_compativel_tem_pessoa_capacete_e_colete(self):
+        self.assertEqual(deteccao.papeis_faltando({0: "helmet", 1: "person", 2: "vest"}), [])
+        self.assertEqual(deteccao.papeis_faltando(["Capacete", "Colete_Refletivo", "Pessoa"]), [])
 
-    def test_interpretar_diz_em_que_parte_do_corpo_fica_o_epi(self):
-        self.assertEqual(deteccao.interpretar("Capacete"), (deteccao.CABECA, None))
-        self.assertEqual(deteccao.interpretar("Sem_Capacete"), (deteccao.CABECA, CAP))
-        self.assertEqual(deteccao.interpretar("Colete_Refletivo"), (deteccao.TRONCO, None))
-        self.assertEqual(deteccao.interpretar("Sem_Colete"), (deteccao.TRONCO, COL))
-        self.assertIsNone(deteccao.interpretar("Pessoa"))
+    def test_modelo_antigo_com_classes_sem_epi_e_recusado(self):
+        antigo = {0: "Capacete", 1: "Colete_Refletivo", 2: "Sem_Capacete", 3: "Sem_Colete"}
+        self.assertEqual(deteccao.papeis_faltando(antigo), [deteccao.PESSOA])  # sem "pessoa" nunca alertaria
 
 
 class TestMontagemDePessoas(unittest.TestCase):
-    def test_cada_epi_vai_para_a_pessoa_certa_mesmo_com_colete_largo_cobrindo_os_dois(self):
-        pessoas = montar_pessoas(DUAS_PESSOAS, 0.70)
-        por_cabeca = {p.cabeca.nome: p for p in pessoas}
-        homem, mulher = por_cabeca["Capacete"], por_cabeca["Sem_Capacete"]
-        self.assertEqual(len(pessoas), 2)
-        self.assertEqual(homem.tronco.caixa, COLETE_ESTREITO[2])
-        self.assertEqual(mulher.tronco.caixa, COLETE_LARGO[2])
-        self.assertEqual(set(homem.infracoes()), {COL})
-        self.assertEqual(set(mulher.infracoes()), {CAP, COL})
+    def montar(self, deteccoes, **kw):
+        args = dict(confianca_pessoa=0.50, confianca_epi=0.35, altura_minima=120)
+        args.update(kw)
+        return montar_pessoas(deteccoes, **args)
 
-    def test_atribuicao_independe_da_ordem_das_deteccoes(self):
-        rnd = random.Random(1)
-        for _ in range(30):
-            deteccoes = list(DUAS_PESSOAS)
-            rnd.shuffle(deteccoes)
-            por_cabeca = {p.cabeca.nome: p for p in montar_pessoas(deteccoes, 0.70)}
-            self.assertEqual(por_cabeca["Capacete"].tronco.caixa, COLETE_ESTREITO[2])
-            self.assertEqual(por_cabeca["Sem_Capacete"].tronco.caixa, COLETE_LARGO[2])
+    def test_cada_epi_vai_para_a_pessoa_dona_dele(self):
+        pessoas = {p.caixa[0]: p for p in self.montar(COM_TUDO + SEM_CAPACETE + SEM_COLETE)}
+        self.assertEqual(len(pessoas), 3)
+        self.assertEqual((pessoas[A].estado(CAP), pessoas[A].estado(COL)), ("ok", "ok"))
+        self.assertEqual((pessoas[B].estado(CAP), pessoas[B].estado(COL)), ("ausente", "ok"))
+        self.assertEqual((pessoas[C].estado(CAP), pessoas[C].estado(COL)), ("ok", "ausente"))
 
-    def test_caixa_aninhada_na_mesma_cabeca_nao_vira_outra_pessoa(self):
-        pessoas = montar_pessoas([CABECA_LARGA, CABECA_ANINHADA, COLETE_1], 0.70)
-        self.assertEqual(len(pessoas), 1)
-        self.assertEqual(pessoas[0].cabeca.confianca, 0.88)  # fica a de maior confiança
+    def test_limiar_por_classe_um_colete_duvidoso_nao_esconde_a_falta(self):
+        # A pessoa está sem colete, mas o modelo "viu" um a 53% (camiseta clara): com limiar 0,65 isso é falta.
+        cena = [pessoa(A), capacete(A), colete(A, conf=0.53)]
+        (p,) = self.montar(cena, confianca_epi={deteccao.CAPACETE: 0.50, deteccao.COLETE: 0.65})
+        self.assertEqual((p.estado(CAP), p.estado(COL)), ("ok", "ausente"))
+        (p,) = self.montar(cena, confianca_epi=0.35)  # com o limiar antigo, único e baixo, o colete falso passa
+        self.assertEqual(p.estado(COL), "ok")
 
-    def test_segunda_caixa_do_mesmo_colete_nao_e_entregue_ao_vizinho(self):
-        duplicata = ("Sem_Colete", 0.70, (180, 330, 370, 479))  # dentro do colete estreito do homem
-        pessoas = montar_pessoas([HOMEM_CAPACETE, MULHER_SEM_CAPACETE, COLETE_ESTREITO, duplicata], 0.70)
-        por_cabeca = {p.cabeca.nome: p for p in pessoas}
-        self.assertEqual(len(pessoas), 2)
-        self.assertIsNone(por_cabeca["Sem_Capacete"].tronco)  # colete dela não detectado: não é acusada
+    def test_limiar_por_classe_nao_afeta_o_outro_epi(self):
+        cena = [pessoa(A), capacete(A, conf=0.55), colete(A, conf=0.80)]
+        (p,) = self.montar(cena, confianca_epi={deteccao.CAPACETE: 0.50, deteccao.COLETE: 0.65})
+        self.assertEqual((p.estado(CAP), p.estado(COL)), ("ok", "ok"))
 
-    def test_cabeca_e_tronco_levemente_desalinhados_continuam_sendo_a_mesma_pessoa(self):
-        tronco = ("Sem_Colete", 0.77, (300, 300, 460, 479))
-        cabeca = ("Sem_Capacete", 0.79, (440, 350, 560, 450))  # centro fora da faixa do tronco e abaixo do centro
-        pessoas = montar_pessoas([cabeca, tronco], 0.70)
-        self.assertEqual(len(pessoas), 1)
-        self.assertIsNotNone(pessoas[0].cabeca)
-        self.assertIsNotNone(pessoas[0].tronco)
+    def test_limiar_da_pessoa_respeita_o_piso_do_banco(self):
+        # o banco recusa infração com score_confianca < 0,50 (CHECK em infracao): abaixo disso o alerta vira erro 500
+        self.assertGreaterEqual(config.CONFIANCA_PESSOA, 0.50)
 
-    def test_cabeca_e_tronco_afastados_nao_sao_fundidos(self):
-        cabeca = ("Sem_Capacete", 0.9, (40, 40, 140, 130))
-        tronco = ("Sem_Colete", 0.85, (400, 150, 560, 479))
-        self.assertEqual(len(montar_pessoas([cabeca, tronco], 0.70)), 2)
+    def test_config_usa_limiares_separados_e_o_modelo_filtra_pelo_menor(self):
+        self.assertEqual(set(config.LIMIARES_EPI), {deteccao.CAPACETE, deteccao.COLETE})
+        self.assertEqual(config.CONFIANCA_MODELO, min(config.CONFIANCA_PESSOA, *config.LIMIARES_EPI.values()))
 
-    def test_tronco_sem_cabeca_vira_pessoa_so_com_tronco(self):
-        pessoas = montar_pessoas([("Sem_Colete", 0.85, (200, 250, 420, 470))], 0.70)
-        self.assertEqual(len(pessoas), 1)
-        self.assertIsNone(pessoas[0].cabeca)
+    def test_capacete_e_colete_sem_pessoa_sao_ignorados(self):
+        self.assertEqual(self.montar([capacete(A), colete(A)]), [])
 
-    def test_baixa_confianca_e_classes_desconhecidas_sao_ignoradas(self):
-        deteccoes = [("Sem_Capacete", 0.5, (300, 100, 400, 200)), ("Pessoa", 0.99, (10, 10, 100, 100))]
-        self.assertEqual(montar_pessoas(deteccoes, 0.70), [])
+    def test_capacete_duplicado_na_mesma_cabeca_nao_cria_nada_nem_quebra(self):
+        duplicado = ("helmet", 0.60, (A + 35, 40, A + 105, 90))  # dentro do capacete certo
+        (p,) = self.montar([pessoa(A), capacete(A), duplicado, colete(A)])
+        self.assertEqual(p.capacete.confianca, 0.85)  # fica a de maior confiança
+
+    def test_pessoas_sobrepostas_o_capacete_vai_para_a_cabeca_mais_proxima(self):
+        frente = pessoa(60)  # 60..200
+        atras = pessoa(120)  # 120..260: o capacete dela (centro x 190) também cai na faixa da pessoa da frente
+        pessoas = {p.caixa[0]: p for p in self.montar([frente, atras, capacete(120)])}
+        self.assertEqual(pessoas[120].estado(CAP), "ok")
+        self.assertEqual(pessoas[60].estado(CAP), "ausente")
+
+    def test_pessoa_pequena_demais_nao_e_julgada(self):
+        longe = ("person", 0.9, (300, 200, 340, 290))  # 90 px de altura
+        (p,) = self.montar([longe])
+        self.assertEqual((p.estado(CAP), p.estado(COL)), ("desconhecido", "desconhecido"))
+
+    def test_cabeca_cortada_pela_borda_de_cima_nao_cobra_capacete(self):
+        (p,) = self.montar([pessoa(A, y=0), colete(A, y=0)])
+        self.assertEqual(p.estado(CAP), "desconhecido")  # não dá para saber se há capacete fora do quadro
+        self.assertEqual(p.estado(COL), "ok")
+
+    def test_limiares_capacete_baixo_aceita_o_duvidoso_pessoa_alta_ignora_a_fraca(self):
+        (p,) = self.montar([pessoa(A), capacete(A, conf=0.40)])
+        self.assertEqual(p.estado(CAP), "ok")  # 0,40 >= 0,35: duvidoso, mas conta como presente
+        (p,) = self.montar([pessoa(A), capacete(A, conf=0.30)])
+        self.assertEqual(p.estado(CAP), "ausente")  # abaixo de 0,35 não conta
+        self.assertEqual(self.montar([pessoa(A, conf=0.45)]), [])  # pessoa com 0,45 < 0,50 é ignorada
 
 
 class TestAlertasPorPessoa(unittest.TestCase):
-    def test_pessoa_parada_gera_um_alerta_por_tipo_e_nao_repete(self):
-        rnd = random.Random(7)
+    def test_falta_so_vira_alerta_depois_de_confirmada(self):
+        disparos = rodar(novo(), SEM_CAPACETE, 0, 5)
+        self.assertEqual([(t, tipo) for t, tipo, _ in disparos], [(1.0, CAP)])  # confirmação de 1,0 s: não antes
+
+    def test_sem_confirmacao_alerta_no_primeiro_quadro(self):
+        disparos = rodar(novo(confirmacao=0), SEM_CAPACETE, 0, 2)
+        self.assertEqual([(t, tipo) for t, tipo, _ in disparos], [(0.0, CAP)])
+
+    def test_oscilacao_do_modelo_nao_vira_alarme_falso(self):
+        # O modelo "perde" o capacete em 2 de cada 3 quadros (a 5 FPS, 0,4 s sem ver): nunca chega a 1,0 s contínuo.
+        a = novo()
+        alertas = []
+        for f in range(5 * 60):
+            deteccoes = COM_TUDO if f % 3 == 2 else [pessoa(A), colete(A)]
+            alertas += a.filtrar(deteccoes, f / 5).alertas
+        self.assertEqual(alertas, [])
+
+    def test_pessoa_parada_sem_capacete_gera_um_unico_alerta_em_qualquer_fps(self):
         for fps in (2, 5, 15):
-            a = novo()
-            alertas = []
-            for f in range(60 * fps):
-                deteccoes = [CABECA_LARGA, COLETE_1]
-                if rnd.random() < 0.4:
-                    deteccoes.append(CABECA_ANINHADA)  # a caixa duplicada pisca
-                alertas += a.filtrar(deteccoes, f / fps).alertas
-            self.assertEqual(sorted(t for t, _, _ in alertas), [CAP, COL], f"{fps} FPS")
+            disparos = rodar(novo(), SEM_CAPACETE, 0, 60, fps)
+            self.assertEqual([(tipo, n) for _, tipo, n in disparos], [(CAP, 1)], f"{fps} FPS")
+
+    def test_pessoa_com_todos_os_epis_conta_mas_nao_alerta(self):
+        a = novo()
+        self.assertEqual(rodar(a, COM_TUDO, 0, 10), [])
+        self.assertEqual(a.filtrar(COM_TUDO, 10.0).situacao, ((1, ()),))
+
+    def test_duas_pessoas_cada_uma_com_a_sua_falta(self):
+        disparos = rodar(novo(), SEM_CAPACETE + SEM_COLETE, 0, 5)
+        self.assertEqual(sorted((tipo, n) for _, tipo, n in disparos), [(CAP, 1), (COL, 2)])
+
+    def test_sem_nenhum_epi_acusa_os_dois_na_mesma_pessoa(self):
+        disparos = rodar(novo(), SEM_NADA, 0, 5)
+        self.assertEqual(sorted((tipo, n) for _, tipo, n in disparos), [(CAP, 1), (COL, 1)])
+
+    def test_quem_nao_da_para_julgar_nunca_gera_alerta(self):
+        longe = [("person", 0.9, (300, 200, 340, 290))]
+        cortada = [("person", 0.9, (60, 0, 200, 360)), colete(A, y=0)]
+        self.assertEqual(rodar(novo(), longe, 0, 30), [])
+        self.assertEqual(rodar(novo(), cortada, 0, 30), [])  # tem colete; capacete não é julgável no topo cortado
 
     def test_realerta_configuravel(self):
-        a = novo(realerta=10.0)
-        instantes = [t for t in (f / 5 for f in range(25 * 5)) if a.filtrar([CABECA_LARGA], t).alertas]
-        self.assertEqual(instantes, [0.0, 10.0, 20.0])
+        disparos = rodar(novo(realerta=10.0), SEM_CAPACETE, 0, 25)
+        self.assertEqual([t for t, _, _ in disparos], [1.0, 11.0, 21.0])
 
-    def test_dois_trabalhadores_no_mesmo_quadro_geram_dois_alertas(self):
-        cena = novo().filtrar(DUAS_PESSOAS, 0.0)
-        self.assertEqual(sorted((t, n) for t, _, n in cena.alertas if t == COL), [(COL, 1), (COL, 2)])
-        self.assertEqual(len(cena.situacao), 2)
-
-    def test_some_poucos_segundos_e_volta_sem_alerta_novo_mas_depois_de_muito_tempo_alerta(self):
+    def test_volta_logo_nao_repete_mas_depois_de_muito_tempo_alerta_de_novo(self):
         a = novo()
-        a.filtrar([CABECA_LARGA], 0.0)
-        self.assertEqual(a.filtrar([CABECA_LARGA], 5.0).alertas, [])
+        rodar(a, SEM_CAPACETE, 0, 3)  # alerta em 1,0; última vez vista em 2,8
         a.filtrar([], 6.0)
-        self.assertEqual(len(a.filtrar([CABECA_LARGA], 18.5).alertas), 1)
-
-    def test_frame_vazio_nao_gera_alerta_fantasma(self):
-        a = novo(realerta=10.0)
-        a.filtrar([CABECA_LARGA], 0.0)
-        self.assertEqual(a.filtrar([], 10.5).alertas, [])
+        self.assertEqual(rodar(a, SEM_CAPACETE, 8, 11), [])  # voltou em 5 s: mesma falta, sem novo alerta
+        a.filtrar([], 12.0)
+        a.filtrar([], 25.0)  # sumiu por mais de 10 s: é uma nova ocorrência
+        disparos = rodar(a, SEM_CAPACETE, 26, 30)
+        self.assertEqual(len(disparos), 1)
 
     def test_tira_poe_e_tira_o_capacete_dentro_da_janela_nao_repete(self):
-        sem = [("Sem_Capacete", 0.9, (250, 100, 350, 180))]
-        com = [("Capacete", 0.9, (250, 100, 350, 180))]
         a = novo()
-        self.assertEqual(len(a.filtrar(sem, 0.0).alertas), 1)
-        a.filtrar(com, 2.0)
-        self.assertEqual(a.filtrar(sem, 5.0).alertas, [])
-        for t in range(6, 18):
-            a.filtrar(com, float(t))
-        self.assertEqual(len(a.filtrar(sem, 18.0).alertas), 1)
-
-    def test_pessoa_de_epi_correto_conta_mas_nao_alerta(self):
-        conforme = [("Capacete", 0.9, (80, 40, 180, 120)), ("Colete_Refletivo", 0.9, (60, 130, 200, 300))]
-        cena = novo().filtrar(conforme, 0.0)
-        self.assertEqual(cena.alertas, [])
-        self.assertEqual(cena.situacao, ((1, ()),))
+        sem, com = [pessoa(A), colete(A)], COM_TUDO
+        self.assertEqual(len(rodar(a, sem, 0, 2)), 1)  # alerta
+        rodar(a, com, 2, 5)  # põe o capacete
+        self.assertEqual(rodar(a, sem, 5, 8), [])  # tira de novo em 5 s: mesma ocorrência
+        rodar(a, com, 8, 25)  # fica 17 s regularizado
+        self.assertEqual(len(rodar(a, sem, 25, 28)), 1)  # tira de novo: nova ocorrência
 
     def test_numeracao_se_recompacta_quando_alguem_sai(self):
-        p1 = [("Sem_Capacete", 0.9, (80, 60, 180, 160))]
-        p2 = [("Sem_Capacete", 0.8, (420, 200, 520, 300))]
-        p3 = [("Sem_Capacete", 0.7, (250, 330, 350, 430))]
-        a = novo()
-        a.filtrar(p1, 0.0)
+        a = novo(confirmacao=0)
+        p1, p2, p3 = SEM_CAPACETE, SEM_COLETE, [pessoa(A)]
+        self.assertEqual([(t, n) for t, _, n in a.filtrar(p1, 0.0).alertas], [(CAP, 1)])
         cena = a.filtrar(p1 + p2, 1.0)
-        self.assertEqual([(t, n) for t, _, n in cena.alertas], [(CAP, 2)])
+        self.assertEqual([(t, n) for t, _, n in cena.alertas], [(COL, 2)])
         self.assertEqual(len(a.filtrar(p2, 3.5).situacao), 2)  # a 1 saiu há 2,5 s: ainda conta
         cena = a.filtrar(p2, 4.2)  # saiu há 3,2 s: a 2 vira 1, e renumerar não gera alerta
-        self.assertEqual(cena.situacao, ((1, (CAP,)),))
+        self.assertEqual(cena.situacao, ((1, (COL,)),))
         self.assertEqual(cena.alertas, [])
         cena = a.filtrar(p2 + p3, 5.0)  # quem chega depois ocupa o número seguinte
-        self.assertEqual([(t, n) for t, _, n in cena.alertas], [(CAP, 2)])
-
-    def test_pessoa_partida_em_cabeca_e_tronco_nao_vira_duas(self):
-        # O caso do log de campo: o tronco aparece sozinho e a cabeça entra depois, desalinhada.
-        a_cabeca = ("Sem_Capacete", 0.88, (60, 40, 160, 130))
-        a_tronco = ("Sem_Colete", 0.80, (40, 140, 180, 300))
-        b_tronco = ("Sem_Colete", 0.77, (300, 300, 460, 479))
-        b_cabeca = ("Sem_Capacete", 0.79, (480, 350, 600, 450))
-        a = novo()
-        maximo = 0
-        for f in range(10):
-            maximo = max(maximo, len(a.filtrar([a_cabeca, a_tronco, b_tronco], f / 5).situacao))
-        for f in range(10, 40):
-            cena = a.filtrar([a_cabeca, a_tronco, b_tronco, b_cabeca], f / 5)
-            maximo = max(maximo, len(cena.situacao))
-        self.assertEqual(maximo, 2)
+        self.assertEqual([(t, n) for t, _, n in cena.alertas], [(CAP, 2), (COL, 2)])
 
     def test_memoria_e_limpa_depois_que_todos_saem(self):
         a = novo(realerta=10.0)
-        a.filtrar(DUAS_PESSOAS, 0.0)
-        for f in range(1, 80):
-            a.filtrar([], f / 5)
+        rodar(a, SEM_NADA + SEM_COLETE, 0, 3)
+        for f in range(80):
+            a.filtrar([], 3 + f / 5)
         self.assertEqual(a._rastreador.objetos, {})
-        self.assertEqual(a._episodios, {})
+        self.assertEqual((a._episodios, a._sem_epi), ({}, {}))
+
+    def test_a_mesma_pessoa_com_a_caixa_piscando_continua_sendo_uma_so(self):
+        a = novo()
+        for f in range(100):
+            deteccoes = SEM_CAPACETE if f % 4 else []  # a caixa some em 1 de cada 4 quadros
+            cena = a.filtrar(deteccoes, f / 5)
+            self.assertLessEqual(len(cena.situacao), 1)
 
 
 class TestRastreador(unittest.TestCase):
     def test_casamento_por_menor_distancia_nao_depende_da_ordem(self):
-        def caixa(cx, cy):
-            return {"cabeca": (cx, cy)}
+        def ponto(cx, cy):
+            return {"centro": (cx, cy)}
 
         r = Rastreador(10.0, 150)
-        r.atualizar([caixa(100, 100), caixa(140, 100)], 0.0)  # ids 0 e 1
-        ids = r.atualizar([caixa(120, 100), caixa(100, 100)], 0.2)
+        r.atualizar([ponto(100, 100), ponto(140, 100)], 0.0)  # ids 0 e 1
+        ids = r.atualizar([ponto(120, 100), ponto(100, 100)], 0.2)
         self.assertEqual(ids, [1, 0])
 
     def test_quem_ficou_ausente_alem_do_limite_nao_herda_a_nova_observacao(self):
         r = Rastreador(10.0, 150)
-        self.assertEqual(r.atualizar([{"cabeca": (100, 100)}], 0.0), [0])
-        self.assertEqual(r.atualizar([{"cabeca": (105, 100)}], 13.0), [1])
+        self.assertEqual(r.atualizar([{"centro": (100, 100)}], 0.0), [0])
+        self.assertEqual(r.atualizar([{"centro": (105, 100)}], 13.0), [1])
 
 
 class TestOcorrencia(unittest.TestCase):
     def test_documento_enviado_a_api_traz_a_cena_inteira(self):
-        cena = novo().filtrar(DUAS_PESSOAS, 0.0)
+        cena = novo(confirmacao=0).filtrar(COM_TUDO + SEM_CAPACETE, 0.0)
         oc = ocorrencia_da_cena(cena, 1, "2026-10-10T20:13:36+00:00")
         self.assertEqual((oc["id_dispositivo"], oc["total_pessoas"], len(oc["pessoas"])), (1, 2, 2))
-        p1, p2 = oc["pessoas"]
-        self.assertEqual((p1["numero"], p2["numero"]), (1, 2))
-        self.assertEqual(p1["capacete"]["estado"], "ok")  # a pessoa de EPI correto também fica na cena
-        self.assertFalse(p1["capacete"]["novo"])
-        self.assertTrue(p1["colete"]["novo"])
-        self.assertTrue(p2["capacete"]["novo"] and p2["colete"]["novo"])
+        (p1, p2) = oc["pessoas"] if oc["pessoas"][0]["caixa"][0] == A else reversed(oc["pessoas"])
+        self.assertEqual(p1["capacete"], {"estado": "ok", "confianca": 0.85, "novo": False})  # pessoa de EPI correto
+        self.assertEqual(p2["colete"]["estado"], "ok")
+        # sem capacete: a confiança que vai é a da PESSOA (não há detecção de capacete para medir)
+        self.assertEqual(p2["capacete"], {"estado": "ausente", "confianca": 0.9, "novo": True})
 
     def test_so_o_que_disparou_agora_e_novo(self):
-        a = novo()
-        a.filtrar(DUAS_PESSOAS, 0.0)
-        entra = DUAS_PESSOAS + [("Sem_Capacete", 0.8, (20, 20, 120, 110))]
-        oc = ocorrencia_da_cena(a.filtrar(entra, 0.4), 1, "t")
+        a = novo(confirmacao=0)
+        a.filtrar(SEM_CAPACETE, 0.0)
+        oc = ocorrencia_da_cena(a.filtrar(SEM_CAPACETE + SEM_COLETE, 0.2), 1, "t")
         novos = [(p["numero"], k) for p in oc["pessoas"] for k in ("capacete", "colete") if p[k]["novo"]]
         ausentes = [(p["numero"], k) for p in oc["pessoas"] for k in ("capacete", "colete") if p[k]["estado"] == "ausente"]
-        self.assertEqual(novos, [(3, "capacete")])
-        self.assertEqual(len(ausentes), 4)  # as demais seguem na cena, só que sem disparar de novo
+        self.assertEqual(novos, [(2, "colete")])
+        self.assertEqual(len(ausentes), 2)  # o capacete da pessoa 1 segue na cena, mas já tinha sido alertado
 
-    def test_parte_nao_detectada_e_desconhecida_nunca_ausente(self):
-        cena = novo().filtrar([("Sem_Colete", 0.85, (200, 250, 420, 470))], 0.0)  # só tronco
-        (pessoa,) = ocorrencia_da_cena(cena, 1, "t")["pessoas"]
-        self.assertEqual(pessoa["capacete"], {"estado": "desconhecido", "confianca": None, "novo": False})
+    def test_pessoa_que_nao_da_para_julgar_e_desconhecida_nunca_ausente(self):
+        cena = novo(confirmacao=0).filtrar([("person", 0.9, (300, 200, 340, 290))], 0.0)
+        (p,) = ocorrencia_da_cena(cena, 1, "t")["pessoas"]
+        self.assertEqual(p["capacete"], {"estado": "desconhecido", "confianca": None, "novo": False})
+        self.assertEqual(p["colete"]["estado"], "desconhecido")
+
+    def test_falta_ainda_nao_confirmada_aparece_como_desconhecida(self):
+        cena = novo(confirmacao=1.0).filtrar(SEM_CAPACETE, 0.0)
+        (p,) = ocorrencia_da_cena(cena, 1, "t")["pessoas"]
+        self.assertEqual(p["capacete"]["estado"], "desconhecido")
 
 
 class TestFilaOffline(unittest.TestCase):
@@ -257,7 +294,9 @@ class TestFilaOffline(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.addCleanup(self._tmp.cleanup)
-        self.oc = ocorrencia_da_cena(novo().filtrar(DUAS_PESSOAS, 0.0), 1, "2026-01-01T00:00:00+00:00")
+        self.oc = ocorrencia_da_cena(
+            novo(confirmacao=0).filtrar(COM_TUDO + SEM_CAPACETE, 0.0), 1, "2026-01-01T00:00:00+00:00"
+        )
 
     def _pendentes(self):
         return sorted(config.PASTA_PENDENTES.glob("*.jpg")) if config.PASTA_PENDENTES.exists() else []
@@ -349,6 +388,13 @@ class TestEnvioHttp(unittest.TestCase):
         with mock.patch.object(cliente_api.requests, "post", side_effect=erro):
             self.assertEqual(cliente_api.enviar_ocorrencia(b"j", {"pessoas": []}), cliente_api.RETENTAR)
             self.assertFalse(cliente_api.enviar_heartbeat())
+
+    def test_heartbeat_leva_a_telemetria_so_quando_ha(self):
+        with mock.patch.object(cliente_api.requests, "post", return_value=self._resposta(200)) as post:
+            self.assertTrue(cliente_api.enviar_heartbeat({"temperatura_c": 51.0, "fps": 2.0}))
+            self.assertEqual(post.call_args.kwargs["json"]["telemetria"], {"temperatura_c": 51.0, "fps": 2.0})
+            cliente_api.enviar_heartbeat()  # placa antiga/sem dados: o corpo continua sendo só o id do dispositivo
+            self.assertEqual(post.call_args.kwargs["json"], {"id_dispositivo": config.ID_DISPOSITIVO})
 
     def test_payload_da_ocorrencia_e_chave_de_api(self):
         oc = {"id_dispositivo": 1, "pessoas": [{"numero": 1}]}

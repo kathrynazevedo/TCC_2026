@@ -574,3 +574,121 @@ test('GET /status/edge marca offline sem heartbeat recente e quando nunca houve'
   assert.equal(velho.json.online, false);
   assert.ok(velho.json.segundos_inativo >= 590);
 });
+
+// ---------- telemetria da placa (heartbeat) ----------
+
+const RETRATO = {
+  temperatura_c: 51.2, temperatura_max_c: 53, limitacao: '0x0', memoria_pct: 42.5, carga_cpu_pct: 88,
+  fps: 2.0, inferencia_ms: 488.3, total_ms: 507, borda_decisao_ms: 525, borda_sirene_ms: 530, borda_api_ms: 2400,
+  ligado_s: 3700, execucao: 2, reinicios_8h: 1, quedas_8h: 0, modelo: 'modelo_pessoa_epi.tflite',
+};
+
+test('heartbeat com telemetria: o painel recebe o retrato da placa com a idade dele', async () => {
+  const semDados = await api('GET', '/api/status/edge');
+  assert.equal(semDados.json.telemetria, null);
+
+  await api('POST', '/api/status/heartbeat', { headers: AUTH, body: { id_dispositivo: 1, telemetria: RETRATO } });
+  const { json } = await api('GET', '/api/status/edge');
+  assert.equal(json.online, true);
+  assert.deepEqual({ ...json.telemetria, atualizada_ha_segundos: undefined }, { ...RETRATO, atualizada_ha_segundos: undefined });
+  assert.ok(json.telemetria.atualizada_ha_segundos <= 5);
+});
+
+test('telemetria suja é limpa campo a campo, sem derrubar o heartbeat', async () => {
+  const suja = {
+    temperatura_c: 'quente', fps: 99999, memoria_pct: 40.123, limitacao: 'rm -rf', modelo: '<script>x</script>.tflite',
+    campo_desconhecido: 1, total_ms: null,
+  };
+  const resposta = await api('POST', '/api/status/heartbeat', { headers: AUTH, body: { id_dispositivo: 1, telemetria: suja } });
+  assert.equal(resposta.status, 200);
+  const { telemetria } = (await api('GET', '/api/status/edge')).json;
+  assert.equal(telemetria.memoria_pct, 40.12); // só o que é válido fica, arredondado
+  assert.equal(telemetria.modelo, 'scriptxscript.tflite'); // sem caracteres de marcação
+  for (const campo of ['temperatura_c', 'fps', 'limitacao', 'campo_desconhecido', 'total_ms']) {
+    assert.equal(campo in telemetria, false, campo);
+  }
+});
+
+test('heartbeat sem telemetria (placa antiga) continua funcionando e não apaga o último retrato', async () => {
+  await api('POST', '/api/status/heartbeat', { headers: AUTH, body: { id_dispositivo: 1, telemetria: RETRATO } });
+  assert.equal((await api('POST', '/api/status/heartbeat', { headers: AUTH, body: { id_dispositivo: 1 } })).status, 200);
+  assert.equal((await api('POST', '/api/status/heartbeat', { headers: AUTH, body: { id_dispositivo: 1, telemetria: [] } })).status, 200);
+  assert.equal((await api('GET', '/api/status/edge')).json.telemetria.fps, 2);
+});
+
+test('banco sem as colunas de telemetria (migração pendente): heartbeat e status seguem de pé', async () => {
+  await pool.query('ALTER TABLE dispositivo_borda DROP COLUMN telemetria');
+  try {
+    const hb = await api('POST', '/api/status/heartbeat', { headers: AUTH, body: { id_dispositivo: 1, telemetria: RETRATO } });
+    assert.equal(hb.status, 200);
+    const { status, json } = await api('GET', '/api/status/edge');
+    assert.equal(status, 200);
+    assert.equal(json.online, true);
+    assert.equal(json.telemetria, null);
+  } finally {
+    await pool.query('ALTER TABLE dispositivo_borda ADD COLUMN telemetria JSONB');
+  }
+});
+
+// ---------- resultados que enchem as tabelas do TCC (tela Sistema) ----------
+
+const RESULTADOS = {
+  conf_capacete_pct: 85.4, conf_capacete_n: 50, conf_colete_pct: 83, conf_colete_n: 50, conf_ausencia_pct: 90.2, conf_ausencia_n: 20,
+  temperatura_media_c: 51.5, reinicio_programado_em_s: 25200, reinicio_apos_h: 8, reinicios_programados_8h: 1,
+  carga_cena: {
+    1: { quadros: 120, fps: 2.1, inferencia_ms: 480.5, borda_decisao_ms: 510, temperatura_c: 49.5 },
+    2: { quadros: 90, fps: 2, inferencia_ms: 491.6, borda_decisao_ms: 528, temperatura_c: 52 },
+    4: { quadros: 30, fps: 1.9, inferencia_ms: 497.3, borda_decisao_ms: 533 },
+  },
+  validacao: {
+    modelo: 'modelo_pessoa_epi.tflite', conjunto: 'test', imagens: 1272,
+    classes: {
+      capacete: { precisao: 0.91, recall: 0.88, map50: 0.93, map50_95: 0.61 },
+      todas: { precisao: 0.881, recall: 0.847, map50: 0.898, map50_95: 0.55 },
+    },
+  },
+};
+
+test('o painel recebe confiança por classe, desempenho por carga de cena, validação e reinício programado', async () => {
+  await api('POST', '/api/status/heartbeat', { headers: AUTH, body: { id_dispositivo: 1, telemetria: RESULTADOS } });
+  const { telemetria } = (await api('GET', '/api/status/edge')).json;
+  assert.equal(telemetria.conf_colete_pct, 83);
+  assert.equal(telemetria.conf_ausencia_n, 20);
+  assert.deepEqual(Object.keys(telemetria.carga_cena), ['1', '2', '4']); // só os grupos que tiveram quadros
+  assert.equal(telemetria.carga_cena['2'].fps, 2);
+  assert.equal(telemetria.carga_cena['4'].temperatura_c, undefined); // sem leitura de temperatura nesse grupo
+  assert.equal(telemetria.validacao.classes.todas.map50, 0.898);
+  assert.equal(telemetria.validacao.imagens, 1272);
+  assert.equal(telemetria.reinicio_programado_em_s, 25200);
+});
+
+test('resultados sujos são limpos: grupos e classes inventados, valores fora da faixa e tipos errados', async () => {
+  const suja = {
+    conf_colete_pct: 140, conf_capacete_pct: 'alta', temperatura_media_c: 50,
+    carga_cena: { 1: { fps: 2, inferencia_ms: -5, quadros: 'muitos' }, 9: { fps: 2 }, x: { fps: 2 }, 3: 'nada' },
+    validacao: {
+      conjunto: 'te<st>', imagens: 10.5,
+      classes: { 'a<b>': { map50: 0.9, recall: 1.5, precisao: 'x' }, vazio: { map50: 7 }, ruim: 'x' },
+    },
+  };
+  const resposta = await api('POST', '/api/status/heartbeat', { headers: AUTH, body: { id_dispositivo: 1, telemetria: suja } });
+  assert.equal(resposta.status, 200);
+  const { telemetria } = (await api('GET', '/api/status/edge')).json;
+  assert.equal(telemetria.temperatura_media_c, 50);
+  assert.equal('conf_colete_pct' in telemetria, false);
+  assert.equal('conf_capacete_pct' in telemetria, false);
+  assert.deepEqual(telemetria.carga_cena, { 1: { fps: 2 } }); // 9, x e 3 descartados; só o campo válido do 1
+  assert.deepEqual(telemetria.validacao.classes, { ab: { map50: 0.9 } }); // 'vazio' e 'ruim' somem
+  assert.equal(telemetria.validacao.conjunto, 'test');
+  assert.equal('imagens' in telemetria.validacao, false); // 10.5 não é inteiro
+});
+
+test('validação do modelo sem nenhuma classe aproveitável não aparece', async () => {
+  await api('POST', '/api/status/heartbeat', {
+    headers: AUTH,
+    body: { id_dispositivo: 1, telemetria: { fps: 2, validacao: { classes: { todas: { map50: 99 } } } } },
+  });
+  const { telemetria } = (await api('GET', '/api/status/edge')).json;
+  assert.equal(telemetria.fps, 2);
+  assert.equal('validacao' in telemetria, false);
+});

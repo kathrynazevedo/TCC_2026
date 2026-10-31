@@ -15,10 +15,16 @@ CREATE TABLE IF NOT EXISTS dispositivo_borda (
   ultima_atividade  TIMESTAMPTZ
 );
 
+-- Retrato da placa enviado no heartbeat (temperatura, FPS, latências...), exibido na tela "Sistema" do painel.
+ALTER TABLE dispositivo_borda ADD COLUMN IF NOT EXISTS telemetria JSONB;
+ALTER TABLE dispositivo_borda ADD COLUMN IF NOT EXISTS telemetria_em TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS infracao (
   id_infracao         SERIAL PRIMARY KEY,
   id_dispositivo      INTEGER NOT NULL REFERENCES dispositivo_borda (id_dispositivo),
-  tipo_epi_ausente    VARCHAR(50) NOT NULL,                 -- 'no-helmet' | 'no-vest' | 'no-helmet-no-vest'
+  -- 'no-helmet' | 'no-vest' | 'no-helmet-no-vest'. No Neon deste projeto a coluna é o ENUM "tipo_epi": rode antes
+  -- db/migracao_tipo_epi.sql, senão a mesma pessoa sem capacete E sem colete dá erro 500.
+  tipo_epi_ausente    VARCHAR(50) NOT NULL,
   score_confianca     NUMERIC(5, 4) NOT NULL,               -- 0 a 1
   timestamp_deteccao  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   imagem_url          TEXT,
