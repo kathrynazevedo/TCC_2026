@@ -1,28 +1,52 @@
 """Sirene da borda: um relé ligado a um pino do GPIO da Raspberry Pi.
 
-Duas coisas dependem do hardware e por isso são configuráveis (config.py / .env):
+Como o relé é comandado (configurável em config.py / .env):
   - O pino, pela numeração FÍSICA da placa (modo BOARD): o pino 11 é o mesmo do teste de bancada.
-  - O nível que ACIONA o relé: a maioria dos módulos de relé liga com o pino em BAIXO (LOW) e desliga em ALTO (HIGH).
-    O nível contrário é o de REPOUSO. Se a sirene tocar sozinha ao ligar o programa, o nível está invertido:
-    troque SIRENE_ATIVA_EM no .env (rode `python3 testar_sirene.py` para conferir de ouvido).
+  - O nível que LIGA o relé (SIRENE_ATIVA_EM): a maioria dos módulos liga com o pino em BAIXO (LOW).
+  - Como DESLIGAR (SIRENE_DESLIGA_SOLTANDO, padrão sim). Muitos módulos de relé são alimentados com 5 V mas comandados
+    por um pino de 3,3 V: com o pino forçado em nível ALTO (3,3 V) o LED do optoacoplador ainda tem tensão e o relé NÃO
+    desliga (foi o caso da bancada deste projeto). O que desliga é SOLTAR o pino (entrada, sem pull), que não manda tensão
+    nenhuma. Então: ligar = conduzir o nível de "ligado"; desligar = soltar o pino.
+
+Quando o programa termina (Ctrl+C, `systemctl stop`, reinício programado), a biblioteca de GPIO solta o pino e ele volta
+ao estado de fábrica da Raspberry (entrada com pull-down), que pode ligar um módulo sensível. Por isso, ao encerrar, o
+estado "solto, sem pull" é fixado no próprio hardware pelo `pinctrl` (que vem no Raspberry Pi OS) e continua valendo
+depois que o processo acaba.
 
 Sem a biblioteca RPi.GPIO (PC, testes) a sirene é simulada no terminal.
 """
+import shutil
+import subprocess
 import threading
 import time
 
+# Numeração FÍSICA (BOARD) -> BCM (GPIO) do conector de 40 pinos (Raspberry Pi 2, 3, 4 e 5): o `pinctrl` fala em BCM.
+BOARD_PARA_BCM = {
+    3: 2, 5: 3, 7: 4, 8: 14, 10: 15, 11: 17, 12: 18, 13: 27, 15: 22, 16: 23, 18: 24, 19: 10, 21: 9, 22: 25,
+    23: 11, 24: 8, 26: 7, 27: 0, 28: 1, 29: 5, 31: 6, 32: 12, 33: 13, 35: 19, 36: 16, 37: 26, 38: 20, 40: 21,
+}
+
 
 class Sirene:
-    def __init__(self, pino, duracao, ativa_em_baixo=True, gpio=None, esperar=time.sleep):
+    def __init__(self, pino, duracao, ativa_em_baixo=True, desliga_soltando=True, gpio=None, esperar=time.sleep,
+                 procurar=shutil.which, rodar=subprocess.run):
         self.pino = pino
         self.duracao = duracao
+        self._desliga_soltando = desliga_soltando
         self._gpio = gpio  # módulo RPi.GPIO (ou um falso nos testes); None = tentar importar em `preparar`
         self._esperar = esperar
+        self._procurar, self._rodar = procurar, rodar  # injetáveis: os testes não chamam o `pinctrl` de verdade
         self._trava = threading.Lock()
         self.ativo = False  # True quando há GPIO de verdade; False = simulada
+        self._encerrando = False  # o programa está saindo: um toque em andamento não pode mais mexer no pino
         self._nivel_ligado = None
         self._nivel_repouso = None
         self._definir_niveis(ativa_em_baixo)
+
+    @property
+    def pino_bcm(self):
+        """Número BCM (GPIO) do pino físico, ou None se o pino não é um GPIO (ex.: 3,3 V, GND)."""
+        return BOARD_PARA_BCM.get(self.pino)
 
     def _definir_niveis(self, ativa_em_baixo):
         if self._gpio is not None:
@@ -33,7 +57,7 @@ class Sirene:
         self._ativa_em_baixo = ativa_em_baixo
 
     def preparar(self):
-        """Configura o pino JÁ em repouso (sem pulso na partida). Devolve True se o GPIO real foi aberto."""
+        """Deixa o pino JÁ desligado (sem pulso na partida). Devolve True se o GPIO real foi aberto."""
         if self._gpio is None:
             try:
                 import RPi.GPIO as gpio
@@ -44,30 +68,47 @@ class Sirene:
         try:
             self._gpio.setwarnings(False)  # canal usado por uma execução anterior que não limpou o pino
             self._gpio.setmode(self._gpio.BOARD)
-            self._gpio.setup(self.pino, self._gpio.OUT, initial=self._nivel_repouso)
+            if self._desliga_soltando:
+                self._gpio.setup(self.pino, self._gpio.IN, pull_up_down=self._gpio.PUD_OFF)
+            else:
+                self._gpio.setup(self.pino, self._gpio.OUT, initial=self._nivel_repouso)
         except (RuntimeError, ValueError):
             self._gpio = None
             return False
         self.ativo = True
         return True
 
-    def _definir(self, nivel):
-        if self.ativo:
-            self._gpio.output(self.pino, nivel)
+    def _comandar(self, ligar):
+        """Liga ou desliga o relé. Desligar = soltar o pino (ou conduzir o repouso, se SIRENE_DESLIGA_SOLTANDO=false)."""
+        if not self.ativo:
+            return
+        try:
+            if ligar:
+                if self._desliga_soltando:
+                    self._gpio.setup(self.pino, self._gpio.OUT, initial=self._nivel_ligado)  # de entrada para saída
+                else:
+                    self._gpio.output(self.pino, self._nivel_ligado)
+            elif self._desliga_soltando:
+                self._gpio.setup(self.pino, self._gpio.IN, pull_up_down=self._gpio.PUD_OFF)
+            else:
+                self._gpio.output(self.pino, self._nivel_repouso)
+        except RuntimeError:
+            if not self._encerrando:  # durante o encerramento o pino pode já ter sido solto por outra thread
+                raise
 
     def tocar(self):
-        """Liga a sirene pelo tempo configurado e volta ao repouso (bloqueia; use `acionar` no laço principal)."""
+        """Liga a sirene pelo tempo configurado e volta a desligá-la (bloqueia; use `acionar` no laço principal)."""
         with self._trava:
             try:
                 if self.ativo:
-                    self._definir(self._nivel_ligado)
+                    self._comandar(True)
                 else:
                     print("[SIRENE SIMULADA] ligada")
                 self._esperar(self.duracao)
             finally:
                 if self.ativo:
-                    self._definir(self._nivel_repouso)  # mesmo se algo falhar, a sirene não fica ligada
-                else:
+                    self._comandar(False)  # mesmo se algo falhar, a sirene não fica ligada
+                elif not self._encerrando:
                     print("[SIRENE SIMULADA] desligada")
 
     def acionar(self):
@@ -75,18 +116,42 @@ class Sirene:
         if not self._trava.locked():
             threading.Thread(target=self.tocar, daemon=True).start()
 
-    def encerrar(self, liberar=False):
-        """Deixa o relé em repouso ao sair do programa.
+    def _segurar_desligada(self):
+        """Fixa o estado "desligado" no hardware para valer DEPOIS que o processo terminar.
 
-        Por padrão NÃO chama GPIO.cleanup(): ele devolve o pino ao estado de entrada (flutuante), e num relé sem
-        resistor de pull-up isso pode ligar a sirene logo depois do teste (o que foi visto na bancada). Sem o cleanup
-        o pino segue em repouso. Se a biblioteca soltar o pino ao fim do processo, o remédio é um resistor de pull-up.
+        Pino solto: libera o pino na biblioteca (ele já está solto, então não há pulso) e o `pinctrl` reafirma
+        "entrada, sem pull" por fora do processo.
+        Pino conduzindo o repouso: 1) pull no repouso (com o pino ainda conduzido), 2) solta o pino (o pull mantém o
+        nível durante a troca), 3) o `pinctrl` volta a conduzir o repouso.
         """
-        if not self.ativo:
+        bcm = self.pino_bcm
+        ferramenta = self._procurar("pinctrl") or self._procurar("raspi-gpio")
+        if bcm is None or ferramenta is None:
+            motivo = "o pino físico %s não é um GPIO" % self.pino if bcm is None else "falta o `pinctrl` (Raspberry Pi OS)"
+            print(f"[HARDWARE] Não dá para segurar o relé desligado depois do fim do programa ({motivo}). "
+                  "Se a sirene tocar quando o programa terminar, veja o README (config.txt ou resistor).")
             return
         try:
-            self._definir(self._nivel_repouso)
-        finally:
-            if liberar:
+            if self._desliga_soltando:
                 self._gpio.cleanup(self.pino)
-            self.ativo = False
+                self._rodar([ferramenta, "set", str(bcm), "ip", "pn"], check=True, capture_output=True, timeout=5)
+            else:
+                repouso_alto = self._nivel_repouso == self._gpio.HIGH
+                pull, nivel = ("pu", "dh") if repouso_alto else ("pd", "dl")
+                self._rodar([ferramenta, "set", str(bcm), pull], check=True, capture_output=True, timeout=5)
+                self._gpio.cleanup(self.pino)
+                self._rodar([ferramenta, "set", str(bcm), "op", nivel], check=True, capture_output=True, timeout=5)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as erro:
+            print(f"[HARDWARE] Não consegui segurar o relé desligado depois do fim do programa ({erro}). "
+                  "Se a sirene tocar quando o programa terminar, veja o README (config.txt ou resistor).")
+
+    def encerrar(self):
+        """Desliga a sirene ao sair do programa e a mantém desligada depois que o processo terminar."""
+        if not self.ativo:
+            return
+        self._encerrando = True
+        try:
+            self._comandar(False)
+        finally:
+            self.ativo = False  # a partir daqui nenhum toque em andamento mexe no pino
+            self._segurar_desligada()

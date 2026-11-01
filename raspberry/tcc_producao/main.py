@@ -36,7 +36,8 @@ def configurar_saida():
 # ==========================================
 # SIRENE (GPIO) — simulada quando não está numa Raspberry (ver sirene.py)
 # ==========================================
-sirene = Sirene(config.PINO_SIRENE, config.DURACAO_SIRENE, ativa_em_baixo=config.SIRENE_ATIVA_EM_BAIXO)
+sirene = Sirene(config.PINO_SIRENE, config.DURACAO_SIRENE, ativa_em_baixo=config.SIRENE_ATIVA_EM_BAIXO,
+                desliga_soltando=config.SIRENE_DESLIGA_SOLTANDO)
 
 
 # ==========================================
@@ -212,7 +213,9 @@ def main():
 
     if sirene.preparar():
         nivel = "BAIXO" if config.SIRENE_ATIVA_EM_BAIXO else "ALTO"
-        print(f"[HARDWARE] Sirene no pino físico {config.PINO_SIRENE} (liga em nível {nivel}), {config.DURACAO_SIRENE:g}s por alerta.")
+        desliga = "soltando o pino" if config.SIRENE_DESLIGA_SOLTANDO else "no nível de repouso"
+        print(f"[HARDWARE] Sirene no pino físico {config.PINO_SIRENE} (liga em nível {nivel}, desliga {desliga}), "
+              f"{config.DURACAO_SIRENE:g}s por alerta.")
     else:
         print("[HARDWARE] RPi.GPIO indisponível: a sirene será simulada no terminal.")
 

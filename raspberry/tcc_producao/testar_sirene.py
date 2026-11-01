@@ -1,10 +1,12 @@
 """Teste de bancada da sirene, com o pino e o nível do .env (os mesmos que o sistema usa em operação).
 
-    python3 testar_sirene.py            # repouso 3 s -> sirene 3 s -> repouso 3 s
+    python3 testar_sirene.py            # desligada 3 s -> sirene 3 s -> desligada 3 s
     python3 testar_sirene.py --segundos 5
 
-Confira de ouvido: a sirene deve ficar CALADA nas fases de repouso e TOCAR só na fase "ACIONADA".
-Se acontecer o contrário, o nível está invertido: coloque SIRENE_ATIVA_EM=alto (ou baixo) no .env e repita.
+Confira de ouvido: a sirene deve ficar CALADA nas fases de repouso e TOCAR só na fase "ACIONADA", e continuar CALADA
+depois que o programa termina (também se você apertar Ctrl+C no meio do toque).
+Se tocar nas fases de repouso e calar na "ACIONADA", o nível está invertido: SIRENE_ATIVA_EM=alto (ou baixo) no .env.
+Se ela NÃO calar nas fases de repouso, o módulo talvez precise do pino solto: confira SIRENE_DESLIGA_SOLTANDO=true.
 """
 import argparse
 import sys
@@ -19,28 +21,33 @@ def main():
     p.add_argument("--segundos", type=float, default=3.0, help="duração de cada fase (padrão 3)")
     args = p.parse_args()
 
-    sirene = Sirene(config.PINO_SIRENE, args.segundos, ativa_em_baixo=config.SIRENE_ATIVA_EM_BAIXO)
+    sirene = Sirene(config.PINO_SIRENE, args.segundos, ativa_em_baixo=config.SIRENE_ATIVA_EM_BAIXO,
+                    desliga_soltando=config.SIRENE_DESLIGA_SOLTANDO)
     if not sirene.preparar():
         print("[ERRO] RPi.GPIO indisponível (este teste só faz sentido na Raspberry Pi).")
         return 1
 
     nivel = "BAIXO" if config.SIRENE_ATIVA_EM_BAIXO else "ALTO"
-    print(f"Pino físico {config.PINO_SIRENE} | o relé liga em nível {nivel} (SIRENE_ATIVA_EM do .env)\n")
+    desliga = "soltando o pino" if config.SIRENE_DESLIGA_SOLTANDO else "conduzindo o nível de repouso"
+    print(f"Pino físico {config.PINO_SIRENE} (GPIO{sirene.pino_bcm}) | liga em nível {nivel} e desliga {desliga}\n")
     try:
-        print(f"1) REPOUSO por {args.segundos:g}s: a sirene deve estar CALADA...")
+        print(f"1) DESLIGADA por {args.segundos:g}s: a sirene deve estar CALADA...")
         time.sleep(args.segundos)
         print(f"2) ACIONADA por {args.segundos:g}s: a sirene deve TOCAR...")
         sirene.tocar()
-        print(f"3) REPOUSO por {args.segundos:g}s: a sirene deve voltar a ficar CALADA...")
+        print(f"3) DESLIGADA por {args.segundos:g}s: a sirene deve voltar a ficar CALADA...")
         time.sleep(args.segundos)
         print("4) O programa vai terminar AGORA. Observe por uns 10 s: a sirene deve CONTINUAR calada.")
     except KeyboardInterrupt:
         print("\n(interrompido)")
     finally:
         sirene.encerrar()
+
+    esperado = "ip" if config.SIRENE_DESLIGA_SOLTANDO else ("op dh" if config.SIRENE_ATIVA_EM_BAIXO else "op dl")
     print("\nTeste finalizado. Anote em que passo a sirene tocou (deve ser só o 2) e se ela ligou DEPOIS do fim do programa.")
-    print("  - tocou nos passos 1 e 3 e calou no 2: nível invertido -> SIRENE_ATIVA_EM=alto no .env")
-    print("  - ligou só depois que o programa terminou: o pino ficou solto -> resistor de pull-up (ver README)")
+    print("  - tocou nos passos 1 e 3 e calou no 2: nível invertido -> SIRENE_ATIVA_EM=alto (ou baixo) no .env")
+    print(f"  - o estado desligado fica segurado pelo `pinctrl`. Para conferir, rode: pinctrl get {sirene.pino_bcm}")
+    print(f"    deve mostrar \"{esperado}\" no começo da linha. Se a sirene tocar mesmo assim, me mande essa saída.")
     return 0
 
 

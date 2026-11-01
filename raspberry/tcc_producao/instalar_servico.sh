@@ -77,3 +77,6 @@ echo "Serviço $NOME instalado e iniciado. Ele sobe sozinho sempre que a placa l
 echo "  ver o que acontece:  journalctl -u $NOME -f"
 echo "  estado:              systemctl status $NOME"
 echo "  parar para testar:   sudo systemctl stop $NOME"
+echo
+echo "Sirene: o programa já segura o relé em repouso ao terminar. Para ela também não tocar durante a PARTIDA da placa,"
+echo "veja no README a linha 'gpio=17=ip,pn' do config.txt (ou um resistor/diodo)."

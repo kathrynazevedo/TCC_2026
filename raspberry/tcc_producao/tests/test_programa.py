@@ -200,6 +200,7 @@ class TestConfigFinal(unittest.TestCase):
                 self.assertEqual(config.REINICIAR_APOS_HORAS, 8.0)
                 self.assertEqual(config.REINICIO_MODO, "programa")
                 self.assertEqual((config.PINO_SIRENE, config.SIRENE_ATIVA_EM_BAIXO), (11, True))
+                self.assertTrue(config.SIRENE_DESLIGA_SOLTANDO)  # o relé da bancada só desliga com o pino solto
                 self.assertEqual(config.CONFIANCA_MODELO, 0.50)  # o modelo devolve tudo a partir do menor limiar
                 self.assertEqual(config.INTERVALO_METRICAS, 10.0)
                 self.assertEqual(Path(config.MODELO_PATH).name, "modelo_pessoa_epi.tflite")

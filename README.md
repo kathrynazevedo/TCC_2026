@@ -187,9 +187,18 @@ Se a API estiver fora do ar, os alertas ficam em `pendentes/` (no máximo `MAX_P
 - **Quem não dá para julgar não é acusado:** pessoa menor que `ALTURA_MINIMA_PESSOA` (120 px) ou com a cabeça cortada pela borda de cima do quadro fica como `desconhecido`.
 - Na ocorrência enviada à API, a `confianca` de um EPI `ausente` é a da **pessoa** detectada (não há detecção de capacete para medir).
 
-**Sirene:** o relé fica no **pino físico 11** (numeração BOARD, o mesmo do teste de bancada) e toca por `DURACAO_SIRENE` segundos (padrão 2) a cada alerta novo; novos alertas durante o toque são ignorados. O relé liga em nível **baixo** por padrão e repousa em alto (o pino já nasce em repouso, sem pulso ao ligar o programa). Se a sua sirene tocar ao contrário, ajuste `SIRENE_ATIVA_EM=alto` no `.env`.
+**Sirene:** o relé fica no **pino físico 11** (numeração BOARD, o mesmo do teste de bancada) e toca por `DURACAO_SIRENE` segundos (padrão 2) a cada alerta novo; novos alertas durante o toque são ignorados. Duas regras, ambas configuráveis no `.env`:
 
-> **Sirene que liga ao terminar o programa?** Ao fim de um processo a biblioteca de GPIO pode soltar o pino (entrada flutuante), e alguns módulos de relé entendem isso como "ligar". O programa mantém o pino em repouso enquanto roda e não chama `GPIO.cleanup()` ao sair, mas se a sirene ainda ligar depois do fim do programa a correção é elétrica: um resistor de pull-up (cerca de 10 kΩ) entre o pino do relé e 3,3 V (módulo que liga em nível baixo) ou pull-down para o GND (módulo que liga em nível alto). Com o serviço instalado o programa fica sempre rodando, o que também mantém o pino segurado.
+- **Liga em nível baixo** (`SIRENE_ATIVA_EM=baixo`, padrão): o pino é puxado para baixo para ligar. Se o seu módulo liga ao contrário, use `SIRENE_ATIVA_EM=alto`.
+- **Desliga soltando o pino** (`SIRENE_DESLIGA_SOLTANDO=true`, padrão): o pino vira entrada, sem pull. Muitos módulos de relé são alimentados com 5 V mas comandados por um pino de 3,3 V, e com o pino forçado em nível **alto** o LED do optoacoplador ainda tem tensão e o relé **não desliga** (foi o caso da bancada deste projeto: só soltar o pino calava a sirene). Com `false`, o programa conduz o nível de repouso em vez de soltar, para módulos que aceitam.
+
+Confira de ouvido com `python3 testar_sirene.py` (desligada, toca, desligada, e continua calada depois do fim do programa).
+
+> **Depois que o programa termina.** Ao fim de um processo (Ctrl+C, `systemctl stop`, reinício programado) a biblioteca de GPIO solta o pino e ele volta ao estado de fábrica da Raspberry: entrada com **pull-down**, que num módulo sensível pode manter o relé ligado. Por isso, ao encerrar, o programa fixa o estado "solto, sem pull" **por fora do processo** com o `pinctrl` (do Raspberry Pi OS). Para conferir depois do teste: `pinctrl get 17` deve começar por `ip` (entrada). Sem o `pinctrl`, o programa avisa no terminal.
+>
+> **O que isso NÃO cobre** (é do hardware, não do programa): a queda de energia, o `kill -9` e a **partida da placa**, porque até o programa subir o pino fica no estado de fábrica (entrada com pull-down). Duas soluções, que se complementam:
+> - **Por software (uma vez):** `echo 'gpio=17=ip,pn' | sudo tee -a /boot/firmware/config.txt` e reinicie. O firmware passa a deixar o pino 11 solto, sem pull, desde o início da partida (para outro pino, troque o número pelo GPIO BCM dele).
+> - **Por hardware:** se o módulo ainda ligar sozinho, um diodo comum (1N4148) em série no fio do sinal, com o **anodo** do lado do módulo e o **catodo** do lado da Raspberry, deixa o pino se comportar como "coletor aberto": só consegue puxar para baixo, nunca empurrar tensão para o módulo. Outra saída é alimentar a parte de entrada do módulo com 3,3 V (módulos com jumper `JD-VCC`).
 
 **Reinício programado do turno:** depois de `REINICIAR_APOS_HORAS` horas de operação (padrão **8**; `0` desliga) o programa reinicia sozinho, esperando um momento sem ninguém em cena (no máximo `REINICIO_TOLERANCIA_S`, padrão 600 s) e terminando antes os envios em andamento. `REINICIO_MODO=programa` (padrão) reabre só o `main.py`; `REINICIO_MODO=placa` faz `sudo reboot` e só vale com o serviço instalado (para o programa subir no boot). O reinício programado não conta como queda: a tela Sistema mostra "Reinícios em 8 h" separando as quedas inesperadas dos programados, e a contagem regressiva até o próximo.
 
@@ -295,7 +304,7 @@ Veja os modelos `backend_api/.env.example`, `frontend/.env.example` e `raspberry
 
 ```bash
 npm test                                                  # API: 42 testes de integração
-(cd raspberry/tcc_producao && python -m unittest discover -s tests)   # placa: 119 testes (sem câmera, modelo nem GPIO)
+(cd raspberry/tcc_producao && python -m unittest discover -s tests)   # placa: 129 testes (sem câmera, modelo nem GPIO)
 npm run lint                                              # frontend
 ```
 

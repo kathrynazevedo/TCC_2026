@@ -94,6 +94,9 @@ RASTREADOR_DIST_MAXIMA = _int("RASTREADOR_DIST_MAXIMA", 150)  # px (frame 640x48
 PINO_SIRENE = _int("PINO_SIRENE", 11)
 # Nível que LIGA o relé: "baixo" (módulos de relé comuns, acionam em LOW) ou "alto". O contrário é o repouso.
 SIRENE_ATIVA_EM_BAIXO = os.getenv("SIRENE_ATIVA_EM", "baixo").strip().lower() != "alto"
+# Como DESLIGAR: soltando o pino (entrada, sem pull; padrão) ou conduzindo o nível de repouso. Módulos de relé de 5 V
+# comandados por um pino de 3,3 V costumam NÃO desligar com o nível alto (foi o caso da bancada): precisam do pino solto.
+SIRENE_DESLIGA_SOLTANDO = os.getenv("SIRENE_DESLIGA_SOLTANDO", "true").strip().lower() != "false"
 DURACAO_SIRENE = _float("DURACAO_SIRENE", 2.0)
 
 # --- Modo offline: alertas que não chegaram à API ficam aqui até a sincronização ---
