@@ -328,17 +328,20 @@ class TestFilaOffline(unittest.TestCase):
         self.assertEqual(self._pendentes(), [])
         self.assertEqual(list(config.PASTA_PENDENTES.glob("*.json")), [])
 
-    def test_pendencia_no_formato_antigo_ainda_e_reenviada_como_infracao_isolada(self):
+    def test_pendencia_de_versao_antiga_sem_ocorrencia_e_removida_como_invalida(self):
+        # Antes das ocorrências a fila guardava uma infração isolada ({"tipo", "confianca", "timestamp"}); a API já não
+        # aceita esse formato, então o arquivo é descartado em vez de ficar travando a fila.
         config.PASTA_PENDENTES.mkdir(parents=True)
         (config.PASTA_PENDENTES / "0000_antiga.jpg").write_bytes(b"jpeg-antigo")
         (config.PASTA_PENDENTES / "0000_antiga.json").write_text(
             json.dumps({"tipo": "no-helmet", "confianca": 0.9, "timestamp": "2026-01-01T00:00:00+00:00"}),
             encoding="utf-8",
         )
-        with mock.patch.object(cliente_api, "enviar_infracao", return_value=cliente_api.OK) as enviar:
+        with mock.patch.object(cliente_api, "enviar_ocorrencia") as enviar:
             enviados, restantes = cliente_api.sincronizar_pendentes()
-        self.assertEqual((enviados, restantes), (1, 0))
-        enviar.assert_called_once_with(b"jpeg-antigo", "no-helmet", 0.9, "2026-01-01T00:00:00+00:00")
+        self.assertEqual((enviados, restantes), (0, 0))
+        enviar.assert_not_called()
+        self.assertEqual(self._pendentes(), [])
 
     def test_sincronizacao_para_no_primeiro_erro_de_rede_e_mantem_o_resto(self):
         cliente_api.salvar_pendente_ocorrencia(b"a", self.oc)
@@ -374,7 +377,6 @@ class TestEnvioHttp(unittest.TestCase):
                  401: cliente_api.RETENTAR, 500: cliente_api.RETENTAR, 503: cliente_api.RETENTAR}
         for status, esperado in casos.items():
             with mock.patch.object(cliente_api.requests, "post", return_value=self._resposta(status)):
-                self.assertEqual(cliente_api.enviar_infracao(b"j", "no-vest", 0.8, "t"), esperado, status)
                 self.assertEqual(cliente_api.enviar_ocorrencia(b"j", {"pessoas": []}), esperado, status)
 
     def test_servidor_sem_a_rota_nova_guarda_em_vez_de_descartar(self):
@@ -406,14 +408,6 @@ class TestEnvioHttp(unittest.TestCase):
         self.assertEqual(kwargs["headers"], {"x-api-key": "segredo"})
         self.assertEqual(json.loads(kwargs["data"]["occurrence"]), oc)
         self.assertIn("image", kwargs["files"])  # nome do campo que o multer espera
-
-    def test_payload_da_infracao_isolada_continua_igual(self):
-        with mock.patch.object(config, "EDGE_API_KEY", "segredo"), \
-             mock.patch.object(cliente_api.requests, "post", return_value=self._resposta(201)) as post:
-            cliente_api.enviar_infracao(b"j", "no-helmet", 0.91234, "2026-01-01T00:00:00+00:00")
-        kwargs = post.call_args.kwargs
-        self.assertEqual(kwargs["data"]["tipo_epi_ausente"], "no-helmet")
-        self.assertEqual(kwargs["data"]["confidence"], "0.9123")
 
     def test_timestamp_em_utc_com_fuso(self):
         self.assertTrue(cliente_api.agora_utc().endswith("+00:00"))

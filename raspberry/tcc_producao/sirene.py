@@ -1,5 +1,11 @@
 """Sirene da borda: um relé ligado a um pino do GPIO da Raspberry Pi.
 
+A sirene SEGUE A CENA (`atualizar`, chamado a cada ciclo do laço principal): liga assim que uma falta de EPI é confirmada,
+fica ligada enquanto houver alguém sem EPI na frente da câmera e só cala `desliga_apos` segundos depois da última
+infração (tolera um quadro em que o modelo "pisca" e quem está saindo de cena). Uma nova infração com a sirene já ligada
+só a mantém ligada. Se a câmera parar de entregar quadros ela também cala: sem imagem não há infração para afirmar.
+Tudo roda na thread do laço principal, então não há corrida entre ligar e encerrar.
+
 Como o relé é comandado (configurável em config.py / .env):
   - O pino, pela numeração FÍSICA da placa (modo BOARD): o pino 11 é o mesmo do teste de bancada.
   - O nível que LIGA o relé (SIRENE_ATIVA_EM): a maioria dos módulos liga com o pino em BAIXO (LOW).
@@ -17,7 +23,6 @@ Sem a biblioteca RPi.GPIO (PC, testes) a sirene é simulada no terminal.
 """
 import shutil
 import subprocess
-import threading
 import time
 
 # Numeração FÍSICA (BOARD) -> BCM (GPIO) do conector de 40 pinos (Raspberry Pi 2, 3, 4 e 5): o `pinctrl` fala em BCM.
@@ -28,17 +33,18 @@ BOARD_PARA_BCM = {
 
 
 class Sirene:
-    def __init__(self, pino, duracao, ativa_em_baixo=True, desliga_soltando=True, gpio=None, esperar=time.sleep,
+    def __init__(self, pino, desliga_apos, ativa_em_baixo=True, desliga_soltando=True, gpio=None, relogio=time.monotonic,
                  procurar=shutil.which, rodar=subprocess.run):
         self.pino = pino
-        self.duracao = duracao
+        self.desliga_apos = desliga_apos  # segundos sem nenhuma infração até a sirene calar
         self._desliga_soltando = desliga_soltando
         self._gpio = gpio  # módulo RPi.GPIO (ou um falso nos testes); None = tentar importar em `preparar`
-        self._esperar = esperar
+        self._relogio = relogio
         self._procurar, self._rodar = procurar, rodar  # injetáveis: os testes não chamam o `pinctrl` de verdade
-        self._trava = threading.Lock()
         self.ativo = False  # True quando há GPIO de verdade; False = simulada
-        self._encerrando = False  # o programa está saindo: um toque em andamento não pode mais mexer no pino
+        self.ligada = False  # a sirene está tocando agora
+        self._ultima_infracao = float("-inf")  # instante da última infração vista (ligar à mão não conta como infração)
+        self._com_falha = False  # o último comando ao GPIO falhou: avisa uma vez, não a cada quadro
         self._nivel_ligado = None
         self._nivel_repouso = None
         self._definir_niveis(ativa_em_baixo)
@@ -80,41 +86,55 @@ class Sirene:
 
     def _comandar(self, ligar):
         """Liga ou desliga o relé. Desligar = soltar o pino (ou conduzir o repouso, se SIRENE_DESLIGA_SOLTANDO=false)."""
-        if not self.ativo:
-            return
-        try:
-            if ligar:
-                if self._desliga_soltando:
-                    self._gpio.setup(self.pino, self._gpio.OUT, initial=self._nivel_ligado)  # de entrada para saída
-                else:
-                    self._gpio.output(self.pino, self._nivel_ligado)
-            elif self._desliga_soltando:
-                self._gpio.setup(self.pino, self._gpio.IN, pull_up_down=self._gpio.PUD_OFF)
+        if ligar:
+            if self._desliga_soltando:
+                self._gpio.setup(self.pino, self._gpio.OUT, initial=self._nivel_ligado)  # de entrada para saída
             else:
-                self._gpio.output(self.pino, self._nivel_repouso)
-        except RuntimeError:
-            if not self._encerrando:  # durante o encerramento o pino pode já ter sido solto por outra thread
-                raise
+                self._gpio.output(self.pino, self._nivel_ligado)
+        elif self._desliga_soltando:
+            self._gpio.setup(self.pino, self._gpio.IN, pull_up_down=self._gpio.PUD_OFF)
+        else:
+            self._gpio.output(self.pino, self._nivel_repouso)
 
-    def tocar(self):
-        """Liga a sirene pelo tempo configurado e volta a desligá-la (bloqueia; use `acionar` no laço principal)."""
-        with self._trava:
-            try:
-                if self.ativo:
-                    self._comandar(True)
-                else:
-                    print("[SIRENE SIMULADA] ligada")
-                self._esperar(self.duracao)
-            finally:
-                if self.ativo:
-                    self._comandar(False)  # mesmo se algo falhar, a sirene não fica ligada
-                elif not self._encerrando:
-                    print("[SIRENE SIMULADA] desligada")
+    def ligar(self):
+        """Liga a sirene e a deixa ligada até `desligar` (o teste de bancada usa isto; o sistema usa `atualizar`)."""
+        if self.ativo:
+            self._comandar(True)
+        else:
+            print("[SIRENE SIMULADA] ligada")
+        self.ligada = True
 
-    def acionar(self):
-        """Dispara a sirene sem bloquear a inferência; se já estiver tocando, ignora."""
-        if not self._trava.locked():
-            threading.Thread(target=self.tocar, daemon=True).start()
+    def desligar(self):
+        if self.ativo:
+            self._comandar(False)
+        else:
+            print("[SIRENE SIMULADA] desligada")
+        self.ligada = False
+
+    def atualizar(self, infracao):
+        """Faz a sirene seguir a cena: liga com a primeira infração e só desliga `desliga_apos` s depois da última.
+
+        `infracao` diz se, agora, há alguém em infração confirmada. Chame a cada ciclo do laço principal, também quando
+        não chegou quadro (senão a sirene ficaria ligada se a câmera caísse). Devolve True só na chamada que LIGOU a
+        sirene: é o instante em que se mede a latência de acionamento.
+        """
+        agora = self._relogio()
+        ligou = False
+        try:
+            if infracao:
+                self._ultima_infracao = agora
+                if not self.ligada:
+                    self.ligar()
+                    ligou = True
+            elif self.ligada and agora - self._ultima_infracao >= self.desliga_apos:
+                self.desligar()
+        except (RuntimeError, OSError) as erro:  # GPIO com problema: o monitoramento segue e tenta de novo no próximo ciclo
+            if not self._com_falha:
+                print(f"[HARDWARE] Não consegui comandar a sirene ({erro}). Vou tentar de novo a cada ciclo.")
+            self._com_falha = True
+            return False
+        self._com_falha = False
+        return ligou
 
     def _segurar_desligada(self):
         """Fixa o estado "desligado" no hardware para valer DEPOIS que o processo terminar.
@@ -149,9 +169,9 @@ class Sirene:
         """Desliga a sirene ao sair do programa e a mantém desligada depois que o processo terminar."""
         if not self.ativo:
             return
-        self._encerrando = True
         try:
             self._comandar(False)
-        finally:
-            self.ativo = False  # a partir daqui nenhum toque em andamento mexe no pino
-            self._segurar_desligada()
+        except (RuntimeError, OSError):
+            pass  # o pino é solto logo abaixo, de qualquer jeito
+        self.ativo = self.ligada = False
+        self._segurar_desligada()

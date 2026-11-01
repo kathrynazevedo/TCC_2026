@@ -105,6 +105,29 @@ def ler_throttling():
         return None
 
 
+# Bits de `vcgencmd get_throttled`: os 4 primeiros são o estado ATUAL; os de 16 a 19, o que já ocorreu desde que a Pi ligou.
+_LIMITACOES = (
+    (0x1, "subtensão agora"), (0x2, "frequência limitada agora"), (0x4, "CPU freada agora"),
+    (0x8, "limite térmico suave agora"), (0x10000, "houve subtensão desde que a Pi ligou"),
+    (0x20000, "a frequência já foi limitada"), (0x40000, "a CPU já foi freada"), (0x80000, "houve limite térmico suave"),
+)
+
+
+def descrever_limitacao(codigo):
+    """'0x50005' -> 'ATENÇÃO: subtensão agora, CPU freada agora, houve subtensão desde que a Pi ligou, a CPU já foi freada'.
+
+    Vazio se não há limitação (ou se o código não existe ou é inválido). O "ATENÇÃO" marca o que acontece AGORA: com a Pi
+    em subtensão a CPU cai de ~1,5 para ~0,6 GHz e tudo (FPS, latência da sirene) fica mais de 2x mais lento, então as
+    medições dessa execução não valem. Só o histórico (sem ATENÇÃO) pede para reiniciar a Pi e zerá-lo antes de medir.
+    """
+    try:
+        valor = int(codigo, 16)
+    except (TypeError, ValueError):
+        return ""
+    texto = ", ".join(descricao for bit, descricao in _LIMITACOES if valor & bit)
+    return f"ATENÇÃO: {texto}" if valor & 0xF else texto
+
+
 def ler_memoria():
     """% da memória RAM em uso (Linux/Raspberry); None onde não existe."""
     try:
@@ -232,9 +255,11 @@ def linhas_terminal(resumo, registro, throttled):
         f"pós {_fmt(_m(resumo['pos']), 1, ' ms')} | total {_fmt(_m(total), 0, ' ms')} (p95 {_fmt(_m(total, 1), 0)}) | "
         f"{resumo['fps']:.1f} FPS (mín. {_fmt(resumo['fps_minimo'], 1)}) | borda→decisão {_fmt(_m(decisao), 0, ' ms')}"
     )
+    detalhe = descrever_limitacao(throttled)
+    limitacao = f"{throttled or 'n/d'} ({detalhe})" if detalhe else (throttled or "n/d")
     sistema = (
         f"[SISTEMA] CPU {_fmt(resumo['temp'], 0, ' °C')} (máx. {_fmt(resumo['temp_max'], 0)}) "
-        f"limitação {throttled or 'n/d'} | ligado há {_tempo(registro.ligado_ha())} | execução nº {registro.numero} | "
+        f"limitação {limitacao} | ligado há {_tempo(registro.ligado_ha())} | execução nº {registro.numero} | "
         f"reinícios em 8 h: {reinicios} ({quedas} queda(s)) | "
         f"sirene {_fmt(_m(resumo['borda_sirene']), 0, ' ms')} | API {_fmt(_m(resumo['borda_api']), 0, ' ms')}"
     )
@@ -308,6 +333,7 @@ class Telemetria:
         self.registro = None
         self.modelo = None
         self.resultados = None  # `Resultados` do laço principal (confiança por classe, desempenho por carga de cena)
+        self.captura = None  # `Captura` (camera.py): com reserva configurada, mostra a câmera em uso e se a reserva responde
         self.reiniciar_apos_h = 0
         self.arquivo_validacao = None
 
@@ -349,6 +375,8 @@ class Telemetria:
                     dados.update(reinicio_programado_em_s=int(falta), reinicio_apos_h=self.reiniciar_apos_h)
             dados.update(self._ultimo)
             dados.update(self._alerta)
+        if self.captura is not None:
+            dados.update(self.captura.estado())
         if self.resultados is not None:
             dados.update(self.resultados.resumo())
         if self.arquivo_validacao:

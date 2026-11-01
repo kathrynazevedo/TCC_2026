@@ -41,9 +41,11 @@ def ocultar_credenciais(fonte):
     return re.sub(r"://[^@/]*@", "://***@", str(fonte))
 
 
-def _fonte_camera():
-    """CAMERA_SOURCE pode ser o índice de uma webcam ("0") ou uma URL RTSP."""
-    valor = os.getenv("CAMERA_SOURCE", "0").strip()
+def _fonte_camera(nome, padrao=None):
+    """Uma câmera do .env: o índice de uma webcam ("0") ou uma URL RTSP. Vazia ou ausente = `padrao` (None = sem câmera)."""
+    valor = os.getenv(nome, "").strip() or padrao
+    if valor is None:
+        return None
     return int(valor) if valor.isdigit() else valor
 
 
@@ -51,14 +53,21 @@ def _fonte_camera():
 API_BASE_URL = os.getenv("API_BASE_URL", "https://tcc-2026-mfxn.onrender.com").strip().rstrip("/")
 EDGE_API_KEY = os.getenv("EDGE_API_KEY", "").strip()  # sem valor padrão: a chave vem do .env, nunca do código
 ID_DISPOSITIVO = _int("ID_DISPOSITIVO", 1)  # id em dispositivo_borda, no banco
-URL_INFRACOES = f"{API_BASE_URL}/api/violations"  # uma infração isolada (formato antigo)
+URL_INFRACOES = f"{API_BASE_URL}/api/violations"  # lista de infrações (a mesma do painel; o teste de conexão confere por ela)
 URL_OCORRENCIAS = f"{API_BASE_URL}/api/occurrences"  # a cena inteira: foto + todas as pessoas e seus EPIs
 URL_HEARTBEAT = f"{API_BASE_URL}/api/status/heartbeat"
 URL_HEALTH = f"{API_BASE_URL}/api/health"
 INTERVALO_HEARTBEAT = _float("INTERVALO_HEARTBEAT", 30.0)  # s entre sinais de vida (a API dá a placa como offline após 90 s)
 
 # --- Câmera e modelo ---
-CAMERA_SOURCE = _fonte_camera()
+CAMERA_SOURCE = _fonte_camera("CAMERA_SOURCE", "0")  # a câmera principal
+# Câmera de reserva (opcional): fica em espera e só assume quando a principal passa CAMERA_TROCA_APOS s sem imagem. Só uma
+# câmera é analisada por vez. Com a reserva em uso, a principal é testada a cada CAMERA_VOLTAR_A_CADA s (0 = não volta
+# sozinha) e a captura volta para ela quando responde.
+CAMERA_SOURCE_SECUNDARIA = _fonte_camera("CAMERA_SOURCE_SECUNDARIA")
+CAMERA_TIMEOUT_S = _float("CAMERA_TIMEOUT_S", 5.0)  # prazo para abrir a câmera de rede e para ler um quadro dela
+CAMERA_TROCA_APOS = _float("CAMERA_TROCA_APOS", 5.0)
+CAMERA_VOLTAR_A_CADA = _float("CAMERA_VOLTAR_A_CADA", 30.0)
 # Modelo de 3 classes (pessoa, capacete, colete); sem elas o programa nem inicia.
 MODELO_PATH = os.getenv("MODELO_PATH", str(BASE_DIR / "modelo_pessoa_epi.tflite"))
 LARGURA_FRAME, ALTURA_FRAME = 640, 480
@@ -97,10 +106,12 @@ SIRENE_ATIVA_EM_BAIXO = os.getenv("SIRENE_ATIVA_EM", "baixo").strip().lower() !=
 # Como DESLIGAR: soltando o pino (entrada, sem pull; padrão) ou conduzindo o nível de repouso. Módulos de relé de 5 V
 # comandados por um pino de 3,3 V costumam NÃO desligar com o nível alto (foi o caso da bancada): precisam do pino solto.
 SIRENE_DESLIGA_SOLTANDO = os.getenv("SIRENE_DESLIGA_SOLTANDO", "true").strip().lower() != "false"
-DURACAO_SIRENE = _float("DURACAO_SIRENE", 2.0)
+# A sirene fica LIGADA enquanto houver alguém sem EPI na cena e só cala depois de tantos segundos sem nenhuma infração (é
+# também o tempo mínimo que ela toca). Tolera um quadro em que o modelo "pisca"; quem se equipa ou sai de cena deixa de contar.
+SIRENE_DESLIGA_APOS = _float("SIRENE_DESLIGA_APOS", 2.0)
 
 # --- Modo offline: alertas que não chegaram à API ficam aqui até a sincronização ---
-PASTA_PENDENTES = Path(os.getenv("PASTA_PENDENTES", str(BASE_DIR / "pendentes")))
+PASTA_PENDENTES = BASE_DIR / "pendentes"
 MAX_PENDENTES = _int("MAX_PENDENTES", 200)  # protege o cartão SD
 INTERVALO_SINCRONIZACAO = _float("INTERVALO_SINCRONIZACAO", 60.0)
 
@@ -109,8 +120,8 @@ INTERVALO_SINCRONIZACAO = _float("INTERVALO_SINCRONIZACAO", 60.0)
 INTERVALO_METRICAS = _float("INTERVALO_METRICAS", 10.0)
 if INTERVALO_METRICAS <= 0:
     INTERVALO_METRICAS = 10.0
-ARQUIVO_METRICAS = Path(os.getenv("ARQUIVO_METRICAS", str(BASE_DIR / "metricas.csv")))  # rodado ao passar de 5 MB
-ARQUIVO_ESTADO = Path(os.getenv("ARQUIVO_ESTADO", str(BASE_DIR / "estado_execucao.json")))  # conta os reinícios
+ARQUIVO_METRICAS = BASE_DIR / "metricas.csv"  # rodado ao passar de 5 MB
+ARQUIVO_ESTADO = BASE_DIR / "estado_execucao.json"  # conta os reinícios
 # Resultado da validação do modelo (mAP por classe), gerado no Colab e mostrado na tela Sistema.
 ARQUIVO_VALIDACAO = Path(os.getenv("ARQUIVO_VALIDACAO", str(BASE_DIR / "validacao_modelo.json")))
 

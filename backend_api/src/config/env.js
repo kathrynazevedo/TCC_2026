@@ -17,7 +17,7 @@ module.exports = {
   // Só desligue a verificação do certificado se o driver reclamar do certificado do provedor.
   databaseSslVerify: process.env.DATABASE_SSL_VERIFY !== 'false',
 
-  // Chave que a Raspberry Pi envia no header x-api-key (POST /violations e POST /status/heartbeat).
+  // Chave que a Raspberry Pi envia no header x-api-key (POST /occurrences e POST /status/heartbeat).
   edgeApiKey: process.env.EDGE_API_KEY || '',
 
   // Senha pedida pelo dashboard para excluir infrações. Padrão simples de projeto acadêmico;

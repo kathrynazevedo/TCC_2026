@@ -46,12 +46,8 @@
 
     --sidebar-background: 222 20% 5%;
     --sidebar-foreground: 40 12% 88%;
-    --sidebar-primary: 46 100% 50%;
-    --sidebar-primary-foreground: 222 22% 9%;
     --sidebar-accent: 222 14% 12%;
-    --sidebar-accent-foreground: 40 12% 88%;
     --sidebar-border: 222 12% 15%;
-    --sidebar-ring: 46 100% 50%;
 
     /* cor de sinal padrão (telas sem data-screen, ex.: menu móvel) */
     --signal: 48 100% 50%;

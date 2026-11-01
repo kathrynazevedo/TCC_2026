@@ -64,16 +64,6 @@ const api = async (method, url, { body, headers = {}, form } = {}) => {
   return { status: res.status, json };
 };
 
-const violationForm = (fields = {}, { file = true, mime = 'image/jpeg' } = {}) => {
-  const form = new FormData();
-  const values = { id_dispositivo: '1', tipo_epi_ausente: 'no-helmet', confidence: '0.91', severity: 'high', ...fields };
-  for (const [key, value] of Object.entries(values)) {
-    if (value !== undefined) form.append(key, value);
-  }
-  if (file) form.append('image', new Blob([Buffer.from('fake-jpeg-bytes')], { type: mime }), 'infracao.jpg');
-  return form;
-};
-
 before(async () => {
   await pool.query(fs.readFileSync(path.join(__dirname, '../db/schema.sql'), 'utf8'));
   server = createApp().listen(0);
@@ -111,87 +101,6 @@ test('rota inexistente em /api devolve 404 em JSON', async () => {
   const { status, json } = await api('GET', '/api/nao-existe');
   assert.equal(status, 404);
   assert.ok(json.error);
-});
-
-// ---------- POST /api/violations (Raspberry Pi) ----------
-
-test('POST /violations sem chave de API é recusado e nada é enviado ao Cloudinary', async () => {
-  const { status } = await api('POST', '/api/violations', { form: violationForm() });
-  assert.equal(status, 401);
-  assert.equal(uploads.length, 0);
-});
-
-test('POST /violations válido grava a infração com o código canônico do EPI', async () => {
-  const { status, json } = await api('POST', '/api/violations', {
-    headers: AUTH,
-    form: violationForm({ tipo_epi_ausente: 'Capacete' }), // apelido antigo da placa
-  });
-  assert.equal(status, 201);
-  assert.equal(json.data.tipo_epi_ausente, 'no-helmet');
-  assert.equal(uploads.length, 1);
-
-  const { rows } = await pool.query('SELECT * FROM infracao');
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].tipo_epi_ausente, 'no-helmet');
-  assert.equal(rows[0].status_resolucao, 'active');
-  assert.equal(rows[0].imagem_url, 'https://img.test/evidencia-1.jpg');
-});
-
-test('POST /violations aceita "sem capacete e sem colete" como UM registro só', async () => {
-  const { status, json } = await api('POST', '/api/violations', {
-    headers: AUTH,
-    form: violationForm({ tipo_epi_ausente: 'no-helmet-no-vest' }),
-  });
-  assert.equal(status, 201);
-  assert.equal(json.data.tipo_epi_ausente, 'no-helmet-no-vest');
-
-  const { rows } = await pool.query('SELECT tipo_epi_ausente FROM infracao');
-  assert.deepEqual(rows.map((r) => r.tipo_epi_ausente), ['no-helmet-no-vest']);
-
-  // a listagem devolve o código canônico, sem ser confundido com um dos dois tipos simples
-  const lista = await api('GET', '/api/violations');
-  assert.equal(lista.json.data[0].type, 'no-helmet-no-vest');
-});
-
-test('POST /violations rejeita dados inválidos sem tocar no Cloudinary', async () => {
-  const cases = [
-    ['sem imagem', violationForm({}, { file: false }), 400],
-    ['tipo desconhecido', violationForm({ tipo_epi_ausente: 'oculos' }), 400],
-    ['confiança fora do intervalo', violationForm({ confidence: '1.7' }), 400],
-    ['confiança ausente', violationForm({ confidence: undefined }), 400],
-    ['severidade inválida', violationForm({ severity: 'urgentissima' }), 400],
-    ['dispositivo inválido', violationForm({ id_dispositivo: 'abc' }), 400],
-    ['dispositivo inexistente', violationForm({ id_dispositivo: '99' }), 404],
-    ['arquivo que não é imagem', violationForm({}, { mime: 'text/html' }), 400],
-  ];
-  for (const [nome, form, esperado] of cases) {
-    const { status } = await api('POST', '/api/violations', { headers: AUTH, form });
-    assert.equal(status, esperado, nome);
-  }
-  assert.equal(uploads.length, 0);
-  const { rows } = await pool.query('SELECT COUNT(*)::int AS n FROM infracao');
-  assert.equal(rows[0].n, 0);
-});
-
-test('POST /violations remove a imagem do Cloudinary se o banco falhar', async () => {
-  const original = pool.query.bind(pool);
-  pool.query = (sql, ...rest) =>
-    typeof sql === 'string' && sql.includes('INSERT INTO infracao') ? Promise.reject(new Error('banco caiu')) : original(sql, ...rest);
-  try {
-    const { status } = await api('POST', '/api/violations', { headers: AUTH, form: violationForm() });
-    assert.equal(status, 500);
-    assert.deepEqual(deletions, ['evidencia-1']);
-  } finally {
-    pool.query = original;
-  }
-});
-
-test('POST /violations com timestamp no futuro é limitado ao horário do servidor', async () => {
-  const futuro = new Date(Date.now() + 3600 * 1000).toISOString();
-  const { status } = await api('POST', '/api/violations', { headers: AUTH, form: violationForm({ timestamp: futuro }) });
-  assert.equal(status, 201);
-  const { rows } = await pool.query('SELECT timestamp_deteccao FROM infracao');
-  assert.ok(new Date(rows[0].timestamp_deteccao) <= new Date());
 });
 
 // ---------- POST /api/occurrences (Raspberry Pi: a cena inteira de uma vez) ----------
@@ -382,6 +291,17 @@ test('POST /occurrences, se uma infração falhar, emite ROLLBACK (nunca COMMIT)
     assert.deepEqual(deletions, ['evidencia-1']);
   } finally {
     client.query = original;
+  }
+});
+
+test('POST /occurrences com timestamp no futuro é limitado ao horário do servidor', async () => {
+  // Relógio da placa adiantado não pode gerar infrações "no futuro".
+  const futuro = new Date(Date.now() + 3600 * 1000).toISOString();
+  const { status } = await api('POST', '/api/occurrences', { headers: AUTH, form: occurrenceForm(cena({ timestamp: futuro })) });
+  assert.equal(status, 201);
+  for (const tabela of ['ocorrencia', 'infracao']) {
+    const { rows } = await pool.query(`SELECT timestamp_deteccao FROM ${tabela}`);
+    assert.ok(rows.every((linha) => new Date(linha.timestamp_deteccao) <= new Date()), tabela);
   }
 });
 
@@ -606,6 +526,20 @@ test('telemetria suja é limpa campo a campo, sem derrubar o heartbeat', async (
   assert.equal(telemetria.modelo, 'scriptxscript.tflite'); // sem caracteres de marcação
   for (const campo of ['temperatura_c', 'fps', 'limitacao', 'campo_desconhecido', 'total_ms']) {
     assert.equal(campo in telemetria, false, campo);
+  }
+});
+
+test('telemetria de câmeras: câmera em uso, trocas e estado da reserva; o que não vale é descartado', async () => {
+  const cameras = { camera_ativa: 'reserva', trocas_camera: 3, reserva_ok: 1 };
+  await api('POST', '/api/status/heartbeat', { headers: AUTH, body: { id_dispositivo: 1, telemetria: { ...RETRATO, ...cameras } } });
+  const { telemetria } = (await api('GET', '/api/status/edge')).json;
+  assert.deepEqual([telemetria.camera_ativa, telemetria.trocas_camera, telemetria.reserva_ok], ['reserva', 3, 1]);
+
+  const suja = { ...RETRATO, camera_ativa: '<b>terceira</b>', trocas_camera: -4, reserva_ok: 7 };
+  await api('POST', '/api/status/heartbeat', { headers: AUTH, body: { id_dispositivo: 1, telemetria: suja } });
+  const limpa = (await api('GET', '/api/status/edge')).json.telemetria;
+  for (const campo of ['camera_ativa', 'trocas_camera', 'reserva_ok']) {
+    assert.equal(campo in limpa, false, campo);
   }
 });
 

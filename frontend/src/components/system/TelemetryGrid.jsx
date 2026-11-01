@@ -1,12 +1,12 @@
 import React from "react";
 import {
   Activity, Box, CloudUpload, Cpu, Gauge, Hourglass, MemoryStick, RotateCcw, ScanLine, Siren, Target, Thermometer,
-  Timer, Users, Zap, CalendarClock, HardHat, Shirt, ShieldAlert,
+  Timer, Users, Zap, CalendarClock, HardHat, Shirt, ShieldAlert, Video,
 } from "lucide-react";
 import { timeAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
-  STALE_AFTER_SECONDS, cpuLoadTone, decodeThrottle, formatMs, formatNumber, formatUptime, loadGroupLabel,
+  STALE_AFTER_SECONDS, cpuLoadTone, decodeThrottle, describeCamera, formatMs, formatNumber, formatUptime, loadGroupLabel,
   orderValidationClasses, temperatureTone, usageTone, validationClassLabel,
 } from "@/lib/telemetry";
 
@@ -108,6 +108,7 @@ export default function TelemetryGrid({ telemetry, online }) {
 
   const t = telemetry;
   const throttle = decodeThrottle(t.limitacao);
+  const camera = describeCamera(t);
   const preMs = formatMs(t.pre_ms);
   const infMs = formatMs(t.inferencia_ms);
   const posMs = formatMs(t.pos_ms);
@@ -155,7 +156,7 @@ export default function TelemetryGrid({ telemetry, online }) {
           />
           <Metric
             icon={Zap}
-            label="Limitação térmica"
+            label="Energia e limitação"
             value={throttle.label}
             tone={throttle.tone}
             note={throttle.details.length ? throttle.details.join(" · ") : t.limitacao ? `código ${t.limitacao}` : undefined}
@@ -287,7 +288,8 @@ export default function TelemetryGrid({ telemetry, online }) {
           )}
         </ResultTable>
 
-        <Group title="Estabilidade">
+        <Group title="Estabilidade" columns={camera ? "xl:grid-cols-5" : undefined}>
+          {camera && <Metric icon={Video} label="Câmera em uso" value={camera.value} tone={camera.tone} note={camera.note} />}
           <Metric icon={Hourglass} label="Tempo ligado" value={formatUptime(t.ligado_s)} note="desta execução do programa" />
           <Metric icon={Activity} label="Execução nº" value={t.execucao ?? "—"} note="partidas registradas" />
           <Metric

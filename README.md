@@ -20,7 +20,7 @@ Sistema de câmera inteligente baseado em Visão Computacional que monitora cant
 ## 🧩 Arquitetura
 
 ```text
-┌──────────────────────┐   POST /api/violations (foto + dados)    ┌─────────────────────────┐
+┌──────────────────────┐   POST /api/occurrences (foto + cena)    ┌─────────────────────────┐
 │  Raspberry Pi        │ ───────────────────────────────────────▶ │  Backend Node.js        │
 │  câmera → YOLO       │   POST /api/status/heartbeat (30 s)      │  Express 5              │
 │  sirene (GPIO)       │                                          │  ├─ PostgreSQL (Neon)   │
@@ -57,7 +57,7 @@ Sistema de câmera inteligente baseado em Visão Computacional que monitora cant
 │   │   ├── middlewares/      # autenticação da placa, upload, tratamento de erros
 │   │   ├── services/         # armazenamento das imagens (Cloudinary)
 │   │   └── utils/            # validações e HttpError
-│   ├── db/                   # schema.sql e seed.sql
+│   ├── db/                   # schema.sql, seed.sql e migracao_tipo_epi.sql (só para bancos com o ENUM tipo_epi)
 │   └── tests/                # testes de integração (node:test + pg-mem)
 ├── frontend/
 │   └── src/
@@ -70,6 +70,7 @@ Sistema de câmera inteligente baseado em Visão Computacional que monitora cant
     ├── config.py             # configurações (variáveis de ambiente / .env)
     ├── deteccao.py           # regras: acha o EPI dentro da caixa de cada pessoa; falta contínua = um alerta por pessoa e infração
     ├── rastreador.py         # rastreamento por centroide: ID estável por pessoa entre frames
+    ├── camera.py             # captura: câmera principal e reserva (troca ao perder o sinal, volta quando ela responde)
     ├── cliente_api.py        # envio à API, heartbeat (com telemetria) e fila offline (reenvio automático)
     ├── sirene.py             # relé da sirene no GPIO (pino físico, nível configurável); simulada fora da Raspberry
     ├── metricas.py           # métricas, telemetria, confiança por classe, carga de cena, registro de reinícios e CSV
@@ -160,7 +161,7 @@ bash instalar_servico.sh --remover  # desinstala o serviço
 |---|---|
 | `teste_conexao.py` | Confere rede, chave e heartbeat. Com `--infracao` envia uma ocorrência de teste (uma pessoa sem capacete **e** sem colete, com foto) e mostra o SQL para apagá-la do banco. |
 | `testar_sirene.py` | Teste de bancada do relé: repouso → sirene → repouso, com o pino e o nível do `.env`. |
-| `testar_modelo.py` | `--so-classes` confere se um modelo serve ao sistema; sem opções roda o modelo na câmera ou num vídeo (`--fonte`) com a mesma regra de alerta, sem enviar nada nem tocar a sirene. |
+| `testar_modelo.py` | `--so-classes` confere se um modelo serve ao sistema; sem opções roda o modelo na câmera ou num vídeo (`--fonte`; `--fonte reserva` usa a câmera de reserva do `.env`) com a mesma regra de alerta, sem enviar nada nem tocar a sirene. |
 
 **Atualizar a placa** depois de mudar código ou modelo (no PC; o pacote não leva o `.env`, a fila `pendentes/` nem o estado, que a placa mantém):
 
@@ -187,12 +188,12 @@ Se a API estiver fora do ar, os alertas ficam em `pendentes/` (no máximo `MAX_P
 - **Quem não dá para julgar não é acusado:** pessoa menor que `ALTURA_MINIMA_PESSOA` (120 px) ou com a cabeça cortada pela borda de cima do quadro fica como `desconhecido`.
 - Na ocorrência enviada à API, a `confianca` de um EPI `ausente` é a da **pessoa** detectada (não há detecção de capacete para medir).
 
-**Sirene:** o relé fica no **pino físico 11** (numeração BOARD, o mesmo do teste de bancada) e toca por `DURACAO_SIRENE` segundos (padrão 2) a cada alerta novo; novos alertas durante o toque são ignorados. Duas regras, ambas configuráveis no `.env`:
+**Sirene:** o relé fica no **pino físico 11** (numeração BOARD, o mesmo do teste de bancada). Ela **segue a cena**: liga assim que uma falta de EPI é confirmada e **fica ligada enquanto houver alguém sem EPI na frente da câmera**. Cala `SIRENE_DESLIGA_APOS` segundos (padrão 2) depois da última infração, ou seja, quando todos estão equipados ou saíram de quadro; esse tempo evita que ela pique quando o modelo deixa de ver a falta por um quadro. Uma nova infração com a sirene já ligada só a mantém ligada, e se a câmera parar de entregar imagens a sirene também cala (sem imagem não há infração para afirmar). Os **alertas** enviados à API continuam sendo um por pessoa (ver acima); a sirene não depende deles. Duas regras de acionamento do relé, ambas configuráveis no `.env`:
 
 - **Liga em nível baixo** (`SIRENE_ATIVA_EM=baixo`, padrão): o pino é puxado para baixo para ligar. Se o seu módulo liga ao contrário, use `SIRENE_ATIVA_EM=alto`.
 - **Desliga soltando o pino** (`SIRENE_DESLIGA_SOLTANDO=true`, padrão): o pino vira entrada, sem pull. Muitos módulos de relé são alimentados com 5 V mas comandados por um pino de 3,3 V, e com o pino forçado em nível **alto** o LED do optoacoplador ainda tem tensão e o relé **não desliga** (foi o caso da bancada deste projeto: só soltar o pino calava a sirene). Com `false`, o programa conduz o nível de repouso em vez de soltar, para módulos que aceitam.
 
-Confira de ouvido com `python3 testar_sirene.py` (desligada, toca, desligada, e continua calada depois do fim do programa).
+Confira de ouvido com `python3 testar_sirene.py` (desligada, ligada, desligada, e continua calada depois do fim do programa).
 
 > **Depois que o programa termina.** Ao fim de um processo (Ctrl+C, `systemctl stop`, reinício programado) a biblioteca de GPIO solta o pino e ele volta ao estado de fábrica da Raspberry: entrada com **pull-down**, que num módulo sensível pode manter o relé ligado. Por isso, ao encerrar, o programa fixa o estado "solto, sem pull" **por fora do processo** com o `pinctrl` (do Raspberry Pi OS). Para conferir depois do teste: `pinctrl get 17` deve começar por `ip` (entrada). Sem o `pinctrl`, o programa avisa no terminal.
 >
@@ -202,7 +203,14 @@ Confira de ouvido com `python3 testar_sirene.py` (desligada, toca, desligada, e 
 
 **Reinício programado do turno:** depois de `REINICIAR_APOS_HORAS` horas de operação (padrão **8**; `0` desliga) o programa reinicia sozinho, esperando um momento sem ninguém em cena (no máximo `REINICIO_TOLERANCIA_S`, padrão 600 s) e terminando antes os envios em andamento. `REINICIO_MODO=programa` (padrão) reabre só o `main.py`; `REINICIO_MODO=placa` faz `sudo reboot` e só vale com o serviço instalado (para o programa subir no boot). O reinício programado não conta como queda: a tela Sistema mostra "Reinícios em 8 h" separando as quedas inesperadas dos programados, e a contagem regressiva até o próximo.
 
-**Câmera de rede:** em câmera RTSP/HTTP a abertura e a leitura têm prazo de 10 s. Uma queda de rede ou de Wi-Fi faz a leitura falhar e o programa reconecta sozinho (`[VÍDEO] Perda de sinal... Reconectando`), em vez de ficar parado sem avisar.
+**Câmera de rede:** em câmera RTSP/HTTP a abertura e a leitura têm prazo (`CAMERA_TIMEOUT_S`, padrão 5 s). Uma queda de rede ou de Wi-Fi faz a leitura falhar e o programa reconecta sozinho (`[VÍDEO] Perda de sinal... Reconectando`), em vez de ficar parado sem avisar.
+
+**Câmera principal e reserva (opcional):** com uma segunda câmera em `CAMERA_SOURCE_SECUNDARIA` (a principal continua em `CAMERA_SOURCE`) o sistema ganha redundância. Só **uma** câmera é lida e analisada por vez, porque a Raspberry não dá conta de duas; a reserva fica parada, sem gastar CPU nem rede.
+- Se a principal passa `CAMERA_TROCA_APOS` segundos (padrão 5) sem imagem, a captura passa para a reserva.
+- Com a reserva em uso, uma thread à parte testa a principal a cada `CAMERA_VOLTAR_A_CADA` segundos (padrão 30; `0` = não volta sozinho). Quando ela entrega 3 quadros seguidos, a captura volta para ela.
+- Com a principal em uso, a reserva é testada de tempos em tempos (5 min) só para avisar no terminal se ela não responde (`[CÂMERA] ATENÇÃO: a reserva não responde`).
+- Na troca o rastreamento de pessoas recomeça (outro ângulo): quem está em infração gera um alerta novo. A foto de evidência da reserva traz a legenda `CAMERA RESERVA`, e a tela Sistema mostra a câmera em uso, o nº de trocas e se a reserva responde.
+- Se as duas caírem, a captura tenta uma e outra, dando 30 s a cada câmera nova antes de largá-la, sem ficar pulando. Sem `CAMERA_SOURCE_SECUNDARIA` nada muda.
 
 **Validação do modelo (mAP por classe) na tela Sistema:** depois de treinar, rode no Colab a célula abaixo e copie o `validacao_modelo.json` gerado para a pasta do programa na placa. A placa o envia no heartbeat e a tela Sistema mostra a tabela. Sem o arquivo, a tabela fica vazia (nenhum valor é inventado). O arquivo do projeto traz os valores do modelo final (43 épocas, conjunto de validação).
 
@@ -234,8 +242,8 @@ O mesmo conjunto de números aparece em três lugares: no terminal (ou no `journ
 | Pré-processamento / Inferência / Pós-processamento (NMS) | `pré`, `inferência`, `pós` (médias do intervalo; `p95` e pior caso no CSV) |
 | Tempo total por quadro | `total` (redimensionamento + pré + inferência + pós + regras) |
 | FPS sustentada | `FPS` (média do intervalo) e `mín.` (pior intervalo, sem contar o aquecimento) |
-| Latência ponta a ponta (borda → alerta) | `borda→decisão`, `sirene` e `API`, contados desde a captura do quadro (a sirene e o envio só aparecem quando houve alerta) |
-| Temperatura em operação contínua | `CPU` e `máx.` (lidos de `/sys/class/thermal`; `limitação` vem de `vcgencmd get_throttled`, `0x0` = sem limitação) |
+| Latência ponta a ponta (borda → alerta) | `borda→decisão`, `sirene` e `API`, contados desde a captura do quadro (a sirene só aparece quando ela liga, e o envio quando houve alerta) |
+| Temperatura em operação contínua | `CPU` e `máx.` (lidos de `/sys/class/thermal`; `limitação` vem de `vcgencmd get_throttled`, `0x0` = sem limitação; qualquer outro valor é traduzido no terminal e na tela Sistema, por exemplo "subtensão agora" quando a fonte não aguenta e a CPU é freada, o que deixa tudo mais de 2x mais lento. **Só vale medir com `0x0`**; se aparecer só o histórico, reinicie a Pi para zerá-lo) |
 | Estabilidade (reinícios) | `reinícios em 8 h` e `queda(s)`, a partir de `estado_execucao.json` |
 | Confiança por classe e desempenho por carga de cena | só na tela Sistema (acumulados durante a execução) |
 
@@ -251,7 +259,6 @@ Limites: o contador só enxerga um reinício **quando o programa volta a subir**
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/health` | todos | Estado da API e do banco |
 | `POST` | `/api/occurrences` | Raspberry 🔑 | **Registra a cena inteira de uma captura** (`multipart`: `image` + `occurrence`, um JSON — ver abaixo) |
-| `POST` | `/api/violations` | Raspberry 🔑 | Registra uma infração isolada (formato antigo, mantido por compatibilidade; `multipart`: `image`, `id_dispositivo`, `tipo_epi_ausente`, `confidence`, `timestamp`, `severity`) |
 | `GET` | `/api/violations?limit=&status=` | dashboard | Lista infrações (mais recentes primeiro, máx. 1000). Cada uma traz também `occurrence_id`, `person_number`, `people_total` e `people` (a cena) |
 | `PATCH` | `/api/violations/:id` | dashboard | Altera status: `active` → `acknowledged` → `resolved` |
 | `DELETE` | `/api/violations` | dashboard 🔒 | Exclui em lote do banco e do Cloudinary: `{ "ids": [1, 2], "password": "..." }`. Senha em `DELETE_PASSWORD` (padrão `12345`); errada → `403` |
@@ -267,7 +274,7 @@ Códigos de tipo de EPI: `no-helmet` (sem capacete), `no-vest` (sem colete) e `n
 
 ### Telemetria da placa (tela Sistema)
 
-A cada heartbeat (30 s) a placa envia, junto do `id_dispositivo`, um objeto opcional `telemetria` com o que antes só aparecia no terminal: temperatura da CPU (e máxima), limitação térmica (`vcgencmd get_throttled`), memória e carga da CPU, FPS, tempos de pré/inferência/pós/total, latência borda → decisão / sirene / API, tempo ligado, nº da execução, reinícios e quedas em 8 h e o nome do modelo. A API **sanitiza campo a campo** (valor fora da faixa ou desconhecido é descartado, nunca recusa o heartbeat) e guarda só o último retrato em `dispositivo_borda.telemetria`; `GET /api/status/edge` o devolve em `telemetria`, com `atualizada_ha_segundos`. Também vão no heartbeat os **resultados acumulados da execução**: a confiança média por classe (capacete, colete e ausência de EPI, uma amostra por classe a cada segundo), o desempenho por quantidade de pessoas no quadro (FPS, inferência, latência borda → decisão e temperatura para 1, 2, 3 e 4 ou mais pessoas), a temperatura média, a contagem regressiva do reinício programado e, se existir, o `validacao_modelo.json` (mAP por classe). A tela **Sistema** mostra cada item num cartão (temperatura e carga com medidor, limitação térmica decodificada) e esmaece tudo quando a placa fica sem sinal.
+A cada heartbeat (30 s) a placa envia, junto do `id_dispositivo`, um objeto opcional `telemetria` com o que antes só aparecia no terminal: temperatura da CPU (e máxima), limitação térmica (`vcgencmd get_throttled`), memória e carga da CPU, FPS, tempos de pré/inferência/pós/total, latência borda → decisão / sirene / API, tempo ligado, nº da execução, reinícios e quedas em 8 h e o nome do modelo (com câmera reserva, também a câmera em uso, o nº de trocas e se a reserva responde). A API **sanitiza campo a campo** (valor fora da faixa ou desconhecido é descartado, nunca recusa o heartbeat) e guarda só o último retrato em `dispositivo_borda.telemetria`; `GET /api/status/edge` o devolve em `telemetria`, com `atualizada_ha_segundos`. Também vão no heartbeat os **resultados acumulados da execução**: a confiança média por classe (capacete, colete e ausência de EPI, uma amostra por classe a cada segundo), o desempenho por quantidade de pessoas no quadro (FPS, inferência, latência borda → decisão e temperatura para 1, 2, 3 e 4 ou mais pessoas), a temperatura média, a contagem regressiva do reinício programado e, se existir, o `validacao_modelo.json` (mAP por classe). A tela **Sistema** mostra cada item num cartão (temperatura e carga com medidor, limitação térmica decodificada) e esmaece tudo quando a placa fica sem sinal.
 
 ### Ocorrência: a cena inteira numa única requisição
 
@@ -303,8 +310,8 @@ Veja os modelos `backend_api/.env.example`, `frontend/.env.example` e `raspberry
 ## ✅ Testes
 
 ```bash
-npm test                                                  # API: 42 testes de integração
-(cd raspberry/tcc_producao && python -m unittest discover -s tests)   # placa: 129 testes (sem câmera, modelo nem GPIO)
+npm test                                                  # API: 38 testes de integração
+(cd raspberry/tcc_producao && python -m unittest discover -s tests)   # placa: 162 testes (sem câmera, modelo nem GPIO)
 npm run lint                                              # frontend
 ```
 

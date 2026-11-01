@@ -16,6 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import camera  # noqa: E402
 import cliente_api  # noqa: E402
 import config  # noqa: E402
 import main  # noqa: E402
@@ -60,18 +61,18 @@ class TestCodigoDeSaida(unittest.TestCase):
 
 class TestCameraComPrazo(unittest.TestCase):
     def test_camera_de_rede_abre_com_prazo_de_abertura_e_de_leitura(self):
-        with mock.patch.object(main.cv2, "VideoCapture") as abrir:
-            main.abrir_camera("rtsp://usuario:senha@192.168.1.208:554/cam")
+        with mock.patch.object(camera.cv2, "VideoCapture") as abrir:
+            camera.abrir_camera("rtsp://usuario:senha@192.168.1.208:554/cam")
         argumentos = abrir.call_args.args
-        self.assertEqual(argumentos[1], main.cv2.CAP_FFMPEG)
+        self.assertEqual(argumentos[1], camera.cv2.CAP_FFMPEG)
         prazos = argumentos[2]
-        self.assertIn(main.cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, prazos)
-        self.assertIn(main.cv2.CAP_PROP_READ_TIMEOUT_MSEC, prazos)
+        self.assertEqual(prazos[prazos.index(camera.cv2.CAP_PROP_OPEN_TIMEOUT_MSEC) + 1], int(config.CAMERA_TIMEOUT_S * 1000))
+        self.assertEqual(prazos[prazos.index(camera.cv2.CAP_PROP_READ_TIMEOUT_MSEC) + 1], int(config.CAMERA_TIMEOUT_S * 1000))
 
     def test_webcam_e_arquivo_abrem_do_jeito_simples(self):
         for fonte in (0, "cena.mp4"):
-            with mock.patch.object(main.cv2, "VideoCapture") as abrir:
-                main.abrir_camera(fonte)
+            with mock.patch.object(camera.cv2, "VideoCapture") as abrir:
+                camera.abrir_camera(fonte)
             self.assertEqual(abrir.call_args.args, (fonte,))
 
     def test_opencv_antigo_sem_os_parametros_cai_para_a_abertura_simples(self):
@@ -83,8 +84,8 @@ class TestCameraComPrazo(unittest.TestCase):
                 raise TypeError("overload não existe neste OpenCV")
             return "camera"
 
-        with mock.patch.object(main.cv2, "VideoCapture", side_effect=abrir):
-            self.assertEqual(main.abrir_camera("rtsp://host/cam"), "camera")
+        with mock.patch.object(camera.cv2, "VideoCapture", side_effect=abrir):
+            self.assertEqual(camera.abrir_camera("rtsp://host/cam"), "camera")
         self.assertEqual([len(c) for c in chamadas], [3, 1])
 
 
@@ -118,6 +119,15 @@ class TestFerramentas(unittest.TestCase):
         # o antigo modo "só pessoas" (yolov8n genérico) saiu: sem capacete/colete o sistema não tem o que julgar
         codigo, _ = self.conferir_classes({0: "person"})
         self.assertEqual(codigo, 1)
+
+    def test_fonte_reserva_aponta_para_a_camera_secundaria_do_env(self):
+        with mock.patch.object(config, "CAMERA_SOURCE_SECUNDARIA", "rtsp://u:s@192.168.1.209/cam"):
+            self.assertEqual(testar_modelo.resolver_fonte("reserva"), "rtsp://u:s@192.168.1.209/cam")
+            self.assertEqual(testar_modelo.resolver_fonte(" Reserva "), "rtsp://u:s@192.168.1.209/cam")
+        with mock.patch.object(config, "CAMERA_SOURCE_SECUNDARIA", None):
+            self.assertIsNone(testar_modelo.resolver_fonte("reserva"))  # sem reserva configurada: quem chama avisa
+        self.assertEqual(testar_modelo.resolver_fonte("0"), 0)  # webcam
+        self.assertEqual(testar_modelo.resolver_fonte("cena.mp4"), "cena.mp4")  # vídeo
 
     def test_ocorrencia_de_teste_cobre_a_mesma_pessoa_sem_capacete_e_sem_colete(self):
         enviadas = []
@@ -189,7 +199,7 @@ class TestLeituraDoEnv(unittest.TestCase):
 class TestConfigFinal(unittest.TestCase):
     def test_padroes_de_producao_sem_depender_do_env_de_quem_roda(self):
         # Recarrega o config sem ler o .env nem as variáveis de ambiente do projeto: o que vale são os PADRÕES do código.
-        prefixos = ("CONFIANCA_", "REINICI", "PINO_", "SIRENE_", "DURACAO_", "MODELO_")
+        prefixos = ("CONFIANCA_", "REINICI", "PINO_", "SIRENE_", "MODELO_", "CAMERA_")
         ambiente = {k: v for k, v in os.environ.items() if not k.startswith(prefixos)}
         dotenv_falso = types.ModuleType("dotenv")
         dotenv_falso.load_dotenv = lambda *args, **kwargs: None
@@ -201,6 +211,10 @@ class TestConfigFinal(unittest.TestCase):
                 self.assertEqual(config.REINICIO_MODO, "programa")
                 self.assertEqual((config.PINO_SIRENE, config.SIRENE_ATIVA_EM_BAIXO), (11, True))
                 self.assertTrue(config.SIRENE_DESLIGA_SOLTANDO)  # o relé da bancada só desliga com o pino solto
+                self.assertEqual(config.SIRENE_DESLIGA_APOS, 2.0)  # cala 2 s depois da última infração
+                self.assertEqual(config.CAMERA_SOURCE, 0)  # webcam por padrão
+                self.assertIsNone(config.CAMERA_SOURCE_SECUNDARIA)  # sem reserva, nada muda
+                self.assertEqual((config.CAMERA_TIMEOUT_S, config.CAMERA_TROCA_APOS, config.CAMERA_VOLTAR_A_CADA), (5.0, 5.0, 30.0))
                 self.assertEqual(config.CONFIANCA_MODELO, 0.50)  # o modelo devolve tudo a partir do menor limiar
                 self.assertEqual(config.INTERVALO_METRICAS, 10.0)
                 self.assertEqual(Path(config.MODELO_PATH).name, "modelo_pessoa_epi.tflite")
@@ -213,13 +227,37 @@ class TestConfigFinal(unittest.TestCase):
         dotenv_falso.load_dotenv = lambda *args, **kwargs: None
         try:
             for valor in ("0", "-5", "abc"):
-                with mock.patch.dict(os.environ, {"INTERVALO_METRICAS": valor}),                      mock.patch.dict(sys.modules, {"dotenv": dotenv_falso}):
+                with mock.patch.dict(os.environ, {"INTERVALO_METRICAS": valor}), \
+                     mock.patch.dict(sys.modules, {"dotenv": dotenv_falso}):
                     importlib.reload(config)
                     self.assertEqual(config.INTERVALO_METRICAS, 10.0, valor)
-            with mock.patch.dict(os.environ, {"INTERVALO_METRICAS": "2.5", "REINICIO_MODO": "talvez"}),                  mock.patch.dict(sys.modules, {"dotenv": dotenv_falso}):
+            with mock.patch.dict(os.environ, {"INTERVALO_METRICAS": "2.5", "REINICIO_MODO": "talvez"}), \
+                 mock.patch.dict(sys.modules, {"dotenv": dotenv_falso}):
                 importlib.reload(config)
                 self.assertEqual(config.INTERVALO_METRICAS, 2.5)
                 self.assertEqual(config.REINICIO_MODO, "programa")  # modo desconhecido volta ao seguro
+        finally:
+            importlib.reload(config)
+
+    def test_camera_reserva_e_tempos_vem_do_env(self):
+        dotenv_falso = types.ModuleType("dotenv")
+        dotenv_falso.load_dotenv = lambda *args, **kwargs: None
+        ambiente = {
+            "CAMERA_SOURCE": "rtsp://u:s@192.168.1.208:554/cam", "CAMERA_SOURCE_SECUNDARIA": " rtsp://u:s@192.168.1.209:554/cam ",
+            "CAMERA_TROCA_APOS": "8", "CAMERA_VOLTAR_A_CADA": "0", "CAMERA_TIMEOUT_S": "abc",
+        }
+        try:
+            with mock.patch.dict(os.environ, ambiente), mock.patch.dict(sys.modules, {"dotenv": dotenv_falso}):
+                importlib.reload(config)
+                self.assertEqual(config.CAMERA_SOURCE, "rtsp://u:s@192.168.1.208:554/cam")
+                self.assertEqual(config.CAMERA_SOURCE_SECUNDARIA, "rtsp://u:s@192.168.1.209:554/cam")  # sem os espaços
+                self.assertEqual((config.CAMERA_TROCA_APOS, config.CAMERA_VOLTAR_A_CADA), (8.0, 0.0))
+                self.assertEqual(config.CAMERA_TIMEOUT_S, 5.0)  # valor inválido volta ao padrão
+            with mock.patch.dict(os.environ, {"CAMERA_SOURCE": "1", "CAMERA_SOURCE_SECUNDARIA": ""}), \
+                 mock.patch.dict(sys.modules, {"dotenv": dotenv_falso}):
+                importlib.reload(config)
+                self.assertEqual(config.CAMERA_SOURCE, 1)  # índice de webcam
+                self.assertIsNone(config.CAMERA_SOURCE_SECUNDARIA)  # linha vazia no .env = sem reserva
         finally:
             importlib.reload(config)
 

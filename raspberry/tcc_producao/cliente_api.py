@@ -1,4 +1,4 @@
-"""Comunicação com o backend: infrações, heartbeat e fila offline de pendências."""
+"""Comunicação com o backend: ocorrências, heartbeat e fila offline de pendências."""
 import itertools
 import json
 import threading
@@ -57,18 +57,6 @@ def _post(url, nome_arquivo, jpeg, **dados):
         print(f"[REDE] Sem conexão com a API ({erro.__class__.__name__}).")
         return RETENTAR
     return _resultado(resposta)
-
-
-def enviar_infracao(jpeg, tipo, confianca, timestamp):
-    """Envia uma infração isolada (formato antigo; ainda usado para reenviar pendências gravadas por ele)."""
-    dados = {
-        "id_dispositivo": config.ID_DISPOSITIVO,
-        "tipo_epi_ausente": tipo,
-        "severity": "high",
-        "confidence": f"{confianca:.4f}",
-        "timestamp": timestamp,
-    }
-    return _post(config.URL_INFRACOES, "infracao.jpg", jpeg, data=dados)
 
 
 def enviar_ocorrencia(jpeg, ocorrencia):
@@ -144,22 +132,17 @@ def sincronizar_pendentes():
         for foto in fotos:
             meta_arquivo = foto.with_suffix(".json")
             try:
-                meta = json.loads(meta_arquivo.read_text(encoding="utf-8"))
-                if "ocorrencia" in meta:  # cena inteira
-                    if not isinstance(meta["ocorrencia"], dict):
-                        raise ValueError("ocorrencia não é um objeto")
-                    envio = (enviar_ocorrencia, (meta["ocorrencia"],))
-                else:  # infração isolada, gravada por versões anteriores
-                    envio = (enviar_infracao, (meta["tipo"], float(meta["confianca"]), meta["timestamp"]))
-            except (OSError, ValueError, KeyError, TypeError):
+                ocorrencia = json.loads(meta_arquivo.read_text(encoding="utf-8"))["ocorrencia"]
+                if not isinstance(ocorrencia, dict):
+                    raise ValueError("ocorrencia não é um objeto")
+            except (OSError, ValueError, KeyError, TypeError):  # inclui arquivos de versões antigas, sem "ocorrencia"
                 print(f"[SYNC] Metadados inválidos em {foto.name}; removendo.")
                 foto.unlink(missing_ok=True)
                 meta_arquivo.unlink(missing_ok=True)
                 restantes -= 1
                 continue
 
-            funcao, argumentos = envio
-            resultado = funcao(foto.read_bytes(), *argumentos)
+            resultado = enviar_ocorrencia(foto.read_bytes(), ocorrencia)
             if resultado == RETENTAR:
                 break  # servidor fora do ar: não adianta insistir nos demais agora
             foto.unlink(missing_ok=True)

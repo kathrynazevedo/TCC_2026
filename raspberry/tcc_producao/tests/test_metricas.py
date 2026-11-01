@@ -11,8 +11,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from metricas import (  # noqa: E402
-    COLUNAS_CSV, Metricas, RegistroCsv, RegistroExecucao, Telemetria, ler_carga, ler_memoria, ler_temperatura,
-    linhas_janela, linhas_terminal,
+    COLUNAS_CSV, Metricas, RegistroCsv, RegistroExecucao, Telemetria, descrever_limitacao, ler_carga, ler_memoria,
+    ler_temperatura, linhas_janela, linhas_terminal,
 )
 
 
@@ -210,6 +210,30 @@ class TestSaida(unittest.TestCase):
             self.assertIn(trecho, desempenho)
         for trecho in ("CPU 58 °C", "limitação 0x0", "execução nº 1", "reinícios em 8 h: 0", "sirene 95 ms", "API 900 ms"):
             self.assertIn(trecho, sistema)
+
+    def test_sem_limitacao_o_terminal_nao_acrescenta_texto(self):
+        _, sistema = linhas_terminal(self.resumo, self.registro, "0x0")
+        self.assertNotIn("(", sistema.split("limitação")[1].split("|")[0])  # só o código, sem tradução
+        self.assertEqual(descrever_limitacao("0x0"), "")
+
+    def test_subtensao_em_curso_e_traduzida_com_atencao(self):
+        # 0x50005 foi o que a Pi reportou quando ficou 2,4x mais lenta: subtensão agora + CPU freada agora + histórico.
+        texto = descrever_limitacao("0x50005")
+        self.assertTrue(texto.startswith("ATENÇÃO: subtensão agora, CPU freada agora"))
+        self.assertIn("houve subtensão desde que a Pi ligou", texto)
+        self.assertIn("a CPU já foi freada", texto)
+        _, sistema = linhas_terminal(self.resumo, self.registro, "0x50005")
+        self.assertIn("limitação 0x50005 (ATENÇÃO: subtensão agora", sistema)
+
+    def test_so_historico_nao_grita_atencao(self):
+        # 0x50000: já aconteceu desde que a Pi ligou, mas nada em curso. Reiniciar a Pi zera o histórico.
+        texto = descrever_limitacao("0x50000")
+        self.assertEqual(texto, "houve subtensão desde que a Pi ligou, a CPU já foi freada")
+        self.assertNotIn("ATENÇÃO", texto)
+
+    def test_limitacao_ausente_ou_invalida_nao_quebra(self):
+        for codigo in (None, "", "n/d", "xyz"):
+            self.assertEqual(descrever_limitacao(codigo), "")
 
     def test_sem_dados_mostra_traco_em_vez_de_quebrar(self):
         vazio = Metricas(Relogio()).fechar_intervalo()

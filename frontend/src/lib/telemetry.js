@@ -33,11 +33,11 @@ export const cpuLoadTone = (percent) => {
 const THROTTLE_FLAGS = [
   [0x1, "subtensão agora"],
   [0x2, "frequência limitada agora"],
-  [0x4, "limitação térmica agora"],
+  [0x4, "CPU freada agora"],
   [0x8, "limite térmico suave agora"],
   [0x10000, "subtensão desde o boot"],
   [0x20000, "frequência já foi limitada"],
-  [0x40000, "já houve limitação térmica"],
+  [0x40000, "a CPU já foi freada"],
   [0x80000, "já houve limite térmico suave"],
 ];
 
@@ -50,6 +50,19 @@ export const decodeThrottle = (hex) => {
   const details = THROTTLE_FLAGS.filter(([bit]) => value & bit).map(([, text]) => text);
   const now = value & 0xf; // algo está limitando AGORA
   return { tone: now ? "danger" : "warn", label: now ? "Limitada agora" : "Já limitou", details };
+};
+
+// Câmera em uso. Só existe quando a placa tem câmera reserva; sem ela o cartão nem aparece.
+export const describeCamera = (t) => {
+  if (!t?.camera_ativa) return null;
+  const reserve = { 1: "reserva pronta", 0: "reserva sem resposta" }[t.reserva_ok] ?? "reserva não testada";
+  const onReserve = t.camera_ativa === "reserva";
+  return {
+    value: onReserve ? "Reserva" : "Principal",
+    // fora do normal: a reserva está em uso, ou a principal está em uso mas não há reserva respondendo
+    tone: onReserve || t.reserva_ok === 0 ? "warn" : "ok",
+    note: `${t.trocas_camera ?? 0} troca(s) · ${reserve}`,
+  };
 };
 
 // 3700 -> "1h 01min" · 125 -> "2min" · 40 -> "40s"

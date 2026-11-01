@@ -3,6 +3,7 @@
 Código de saída: 0 = encerrado normalmente; 2 = configuração inválida (modelo ausente ou sem as 3 classes), caso em
 que reiniciar não adianta e o serviço systemd não tenta de novo.
 """
+import os
 import queue
 import signal
 import sys
@@ -14,6 +15,7 @@ import cv2
 
 import cliente_api
 import config
+from camera import PRINCIPAL, RESERVA, Captura
 from deteccao import ROTULOS, AlertasPorPessoa, ocorrencia_da_cena, papeis_faltando
 from metricas import (Metricas, RegistroCsv, RegistroExecucao, Resultados, Telemetria, ler_temperatura,
                       ler_throttling, linhas_janela, linhas_terminal)
@@ -36,7 +38,7 @@ def configurar_saida():
 # ==========================================
 # SIRENE (GPIO) — simulada quando não está numa Raspberry (ver sirene.py)
 # ==========================================
-sirene = Sirene(config.PINO_SIRENE, config.DURACAO_SIRENE, ativa_em_baixo=config.SIRENE_ATIVA_EM_BAIXO,
+sirene = Sirene(config.PINO_SIRENE, config.SIRENE_DESLIGA_APOS, ativa_em_baixo=config.SIRENE_ATIVA_EM_BAIXO,
                 desliga_soltando=config.SIRENE_DESLIGA_SOLTANDO)
 
 
@@ -64,59 +66,23 @@ def thread_sincronizacao():
         cliente_api.sincronizar_pendentes()
 
 
-def abrir_camera(fonte):
-    """Abre a câmera. Em câmera de rede (RTSP/HTTP) define prazo de 10 s para abrir e para ler um quadro: sem ele,
-    uma queda de rede deixa a leitura pendurada para sempre e o sistema para de monitorar sem avisar. Com o prazo a
-    leitura falha, e o laço de captura reconecta sozinho."""
-    if isinstance(fonte, str) and "://" in fonte:
-        try:
-            return cv2.VideoCapture(fonte, cv2.CAP_FFMPEG, [
-                cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10000,
-            ])
-        except (TypeError, AttributeError, cv2.error):
-            pass  # OpenCV antigo, sem esses parâmetros: abre do jeito simples
-    return cv2.VideoCapture(fonte)
-
-
-def thread_captura(fila_frames):
-    """Lê a câmera continuamente e mantém só o frame mais recente na fila; reconecta se cair."""
-    cap = None
-    while not parar.is_set():
-        if cap is None or not cap.isOpened():
-            if cap is not None:
-                cap.release()
-            cap = abrir_camera(config.CAMERA_SOURCE)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # menos atraso em streams RTSP
-            if not cap.isOpened():
-                print(f"[VÍDEO] Não foi possível abrir a câmera ({config.ocultar_credenciais(config.CAMERA_SOURCE)}). Nova tentativa em 3s...")
-                parar.wait(3)
-                continue
-            print("[VÍDEO] Câmera conectada.")
-
-        ok, frame = cap.read()
-        if not ok:
-            print("[VÍDEO] Perda de sinal com a câmera. Reconectando...")
-            cap.release()
-            cap = None
-            parar.wait(2)
-            continue
-
-        t_captura = time.perf_counter()  # marco zero da latência "borda -> alerta"
-        frame = cv2.resize(frame, (config.LARGURA_FRAME, config.ALTURA_FRAME))
-        ms_redim = (time.perf_counter() - t_captura) * 1000
-        try:
-            fila_frames.get_nowait()  # descarta o frame antigo
-        except queue.Empty:
-            pass
-        fila_frames.put((frame, t_captura, ms_redim))
-
-    if cap is not None:
-        cap.release()
-
-
 # ==========================================
 # PRINCIPAL
 # ==========================================
+def criar_alertas():
+    """As regras de alerta com a configuração do .env (o rastreamento começa do zero a cada chamada)."""
+    return AlertasPorPessoa(
+        config.TEMPO_REALERTA,
+        config.RASTREADOR_TEMPO_AUSENTE,
+        config.RASTREADOR_DIST_MAXIMA,
+        config.RASTREADOR_TEMPO_PRESENTE,
+        config.CONFIANCA_PESSOA,
+        config.LIMIARES_EPI,
+        config.ALTURA_MINIMA_PESSOA,
+        config.TEMPO_CONFIRMACAO,
+    )
+
+
 def desenhar_epi(frame, parte):
     """Capacete ou colete que o modelo achou, em amarelo fino: mostra o que foi aceito como 'presente'."""
     x1, y1, x2, y2 = parte.caixa
@@ -214,8 +180,8 @@ def main():
     if sirene.preparar():
         nivel = "BAIXO" if config.SIRENE_ATIVA_EM_BAIXO else "ALTO"
         desliga = "soltando o pino" if config.SIRENE_DESLIGA_SOLTANDO else "no nível de repouso"
-        print(f"[HARDWARE] Sirene no pino físico {config.PINO_SIRENE} (liga em nível {nivel}, desliga {desliga}), "
-              f"{config.DURACAO_SIRENE:g}s por alerta.")
+        print(f"[HARDWARE] Sirene no pino físico {config.PINO_SIRENE} (liga em nível {nivel}, desliga {desliga}): fica "
+              f"ligada enquanto houver alguém sem EPI e cala {config.SIRENE_DESLIGA_APOS:g}s depois da última infração.")
     else:
         print("[HARDWARE] RPi.GPIO indisponível: a sirene será simulada no terminal.")
 
@@ -229,20 +195,27 @@ def main():
     # Faz o encerramento por systemd/kill passar pelo mesmo caminho do Ctrl+C.
     signal.signal(signal.SIGTERM, lambda *_: parar.set())
 
-    fila = queue.Queue(maxsize=1)
-    for alvo, args in ((thread_captura, (fila,)), (thread_heartbeat, ()), (thread_sincronizacao, ())):
-        threading.Thread(target=alvo, args=args, daemon=True).start()
+    reserva = config.CAMERA_SOURCE_SECUNDARIA
+    if reserva is not None and reserva == config.CAMERA_SOURCE:
+        print("[AVISO] CAMERA_SOURCE_SECUNDARIA é igual à principal: a reserva foi ignorada.")
+        reserva = None
+    captura = Captura(config.CAMERA_SOURCE, reserva, parar, troca_apos=config.CAMERA_TROCA_APOS,
+                      voltar_a_cada=config.CAMERA_VOLTAR_A_CADA)
+    telemetria.captura = captura
+    if reserva is not None:
+        volta = (f"testa a principal a cada {config.CAMERA_VOLTAR_A_CADA:g}s e volta para ela quando responde"
+                 if config.CAMERA_VOLTAR_A_CADA > 0 else "só volta para a principal se a reserva cair")
+        print(f"[CÂMERA] Principal: {config.ocultar_credenciais(config.CAMERA_SOURCE)} | em espera, a reserva: "
+              f"{config.ocultar_credenciais(reserva)}. Ela assume depois de {config.CAMERA_TROCA_APOS:g}s sem imagem da "
+              f"principal e {volta}.")
 
-    alertas = AlertasPorPessoa(
-        config.TEMPO_REALERTA,
-        config.RASTREADOR_TEMPO_AUSENTE,
-        config.RASTREADOR_DIST_MAXIMA,
-        config.RASTREADOR_TEMPO_PRESENTE,
-        config.CONFIANCA_PESSOA,
-        config.LIMIARES_EPI,
-        config.ALTURA_MINIMA_PESSOA,
-        config.TEMPO_CONFIRMACAO,
-    )
+    fila = queue.Queue(maxsize=1)
+    captura.iniciar(fila)
+    for alvo in (thread_heartbeat, thread_sincronizacao):
+        threading.Thread(target=alvo, daemon=True).start()
+
+    alertas = criar_alertas()
+    camera_atual = PRINCIPAL
     confianca_modelo = config.CONFIANCA_MODELO
     situacao_anterior = ()  # só imprime a situação da cena quando ela muda
     repeticao = f"repete a cada {config.TEMPO_REALERTA:g}s" if config.TEMPO_REALERTA > 0 else "sem repetição"
@@ -265,9 +238,15 @@ def main():
     try:
         while not parar.is_set():
             try:
-                frame, t_captura, ms_redim = fila.get(timeout=1)
+                frame, t_captura, ms_redim, camera = fila.get(timeout=1)
             except queue.Empty:
+                sirene.atualizar(False)  # sem quadro não há infração para afirmar: a sirene ligada cala no tempo de espera
                 continue  # câmera ainda conectando; espera sem gastar CPU
+
+            if camera != camera_atual:  # outra câmera, outro enquadramento: as pessoas e as faltas de antes não valem mais
+                camera_atual = camera
+                alertas = criar_alertas()
+                situacao_anterior = ()
 
             t_inicio = time.perf_counter()
             resultado = model(frame, verbose=False, conf=confianca_modelo)[0]
@@ -283,6 +262,10 @@ def main():
             t_regras = time.perf_counter()
             cena = alertas.filtrar(deteccoes, time.monotonic())
             t_decisao = time.perf_counter()
+
+            # A sirene segue a cena: liga na primeira infração confirmada e fica ligada enquanto alguém estiver sem EPI.
+            if sirene.atualizar(any(p.infracoes for p in cena.pessoas)):
+                metricas.registrar("borda_sirene", (time.perf_counter() - t_captura) * 1000)
 
             ms_regras = (t_decisao - t_regras) * 1000
             metricas.quadro()
@@ -300,6 +283,9 @@ def main():
             # Só desenha o que foi mantido: caixas duplicadas ou sem dono não poluem a foto de evidência.
             for numero, pessoa, infracoes in cena.pessoas:
                 desenhar_pessoa(frame, numero, pessoa, infracoes)
+            if camera == RESERVA:  # a foto de evidência diz de qual câmera veio
+                cv2.putText(frame, "CAMERA RESERVA", (8, config.ALTURA_FRAME - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                            (0, 255, 255), 2, cv2.LINE_AA)
 
             if cena.situacao != situacao_anterior:
                 situacao_anterior = cena.situacao
@@ -310,8 +296,6 @@ def main():
                     print("[CENA] ninguém em cena")
 
             if cena.alertas:
-                sirene.acionar()
-                metricas.registrar("borda_sirene", (time.perf_counter() - t_captura) * 1000)
                 sucesso, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 if sucesso:
                     for tipo, conf, numero in cena.alertas:
@@ -362,6 +346,7 @@ def main():
                   f"FPS mínimo {metricas.fps_minimo or 0:.1f} | temperatura máx. {metricas.temp_max or 0:.0f} °C")
         parar.set()
         sirene.encerrar()
+        captura.encerrar()  # as threads da câmera não podem estar dentro do OpenCV quando o Python encerra (ver camera.py)
         if config.MOSTRAR_JANELA:
             cv2.destroyAllWindows()  # num OpenCV sem interface gráfica (headless) isto daria erro
         print("\nSistema encerrado.")
@@ -374,4 +359,11 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    codigo = main()
+    if any(t.name in ("captura", "sondagem") and t.is_alive() for t in threading.enumerate()):
+        # Câmera travada dentro do OpenCV: encerrar o Python com a thread ainda lá dentro aborta o processo. A limpeza já
+        # foi feita em main(), então sai direto, mantendo o código de saída.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(codigo)
+    sys.exit(codigo)

@@ -4,6 +4,7 @@
     python testar_modelo.py                               # câmera e modelo do .env (modelo_pessoa_epi.tflite), com janela
     python testar_modelo.py --modelo C:\\caminho\\best.pt   # um modelo recém-treinado
     python testar_modelo.py --fonte cena.mp4 --sem-janela --quadros 100 --salvar saida.png
+    python testar_modelo.py --fonte reserva --sem-janela --quadros 50 --salvar reserva.png   # o ângulo da câmera de reserva
 
 Mostra cada pessoa (com o seu número), o capacete e o colete que o modelo achou nela, a contagem e o FPS, e escreve
 [ALERTA] no terminal quando uma falta de EPI seria confirmada. Tecla [q] na janela encerra.
@@ -16,14 +17,23 @@ from collections import Counter, deque
 import cv2
 
 import config
-import main as sistema  # reaproveita o desenho da foto de evidência, igual ao que vai para o painel
-from deteccao import ROTULOS, AlertasPorPessoa, papel, papeis_faltando
+import main as sistema  # reaproveita as regras e o desenho da foto de evidência, iguais aos que vão para o painel
+from camera import abrir_camera
+from deteccao import ROTULOS, papel, papeis_faltando
+
+
+def resolver_fonte(texto):
+    """'reserva' é a câmera de reserva do .env (None se não houver); o resto é o índice de uma webcam, uma URL ou um vídeo."""
+    if texto.strip().lower() == "reserva":
+        return config.CAMERA_SOURCE_SECUNDARIA
+    return int(texto) if texto.isdigit() else texto
 
 
 def ler_argumentos():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--modelo", default=config.MODELO_PATH, help=".pt ou .tflite")
-    p.add_argument("--fonte", default=str(config.CAMERA_SOURCE), help="índice da webcam, URL RTSP ou arquivo de vídeo")
+    p.add_argument("--fonte", default=str(config.CAMERA_SOURCE),
+                   help="índice da webcam, URL RTSP, arquivo de vídeo ou 'reserva' (a CAMERA_SOURCE_SECUNDARIA do .env)")
     p.add_argument("--so-classes", action="store_true",
                    help="só confere se o modelo serve ao sistema (classes de pessoa, capacete e colete) e sai")
     p.add_argument("--sem-janela", action="store_true", help="não abre janela (para rodar sem monitor)")
@@ -50,15 +60,14 @@ def main():
         print("\nRESULTADO: COMPATÍVEL. O modelo tem pessoa, capacete e colete.")
         return 0
 
-    alertas = AlertasPorPessoa(
-        config.TEMPO_REALERTA, config.RASTREADOR_TEMPO_AUSENTE, config.RASTREADOR_DIST_MAXIMA,
-        config.RASTREADOR_TEMPO_PRESENTE, config.CONFIANCA_PESSOA, config.LIMIARES_EPI,
-        config.ALTURA_MINIMA_PESSOA, config.TEMPO_CONFIRMACAO,
-    )
+    alertas = sistema.criar_alertas()
     print("A regra de alerta está ativa (nada é enviado, a sirene não toca).")
 
-    fonte = int(args.fonte) if args.fonte.isdigit() else args.fonte
-    cap = sistema.abrir_camera(fonte)
+    fonte = resolver_fonte(args.fonte)
+    if fonte is None:
+        print("[ERRO] Não há câmera de reserva: defina CAMERA_SOURCE_SECUNDARIA no .env.")
+        return 1
+    cap = abrir_camera(fonte)
     if not cap.isOpened():
         print(f"[ERRO] Não abriu a câmera/vídeo: {config.ocultar_credenciais(fonte)}")
         return 1

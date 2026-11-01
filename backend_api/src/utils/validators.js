@@ -25,10 +25,6 @@ function normalizeEpiType(value) {
   return EPI_ALIASES[value.trim().toLowerCase()] || value;
 }
 
-function isKnownEpiType(value) {
-  return typeof value === 'string' && Object.values(EPI_ALIASES).includes(normalizeEpiType(value));
-}
-
 function parseId(value, label = 'id') {
   const text = String(value ?? '').trim();
   if (!/^\d+$/.test(text)) {
@@ -218,7 +214,13 @@ const TELEMETRY_NUMBERS = {
   conf_colete_n: [0, 1000000000],
   conf_ausencia_pct: [0, 100],
   conf_ausencia_n: [0, 1000000000],
+  // câmeras (só quando a placa tem reserva): trocas entre principal e reserva e se a reserva respondeu (1) ou não (0)
+  trocas_camera: [0, 1000000],
+  reserva_ok: [0, 1],
 };
+
+// Qual câmera está em uso.
+const CAMERAS = ['principal', 'reserva'];
 
 // Desempenho por quantidade de pessoas no quadro (chaves "1" a "4"; "4" = 4 ou mais).
 const CARGA_CENA_KEYS = ['1', '2', '3', '4'];
@@ -293,6 +295,7 @@ function parseTelemetry(raw) {
   }
   const modelo = safeText(raw.modelo, 80);
   if (modelo) out.modelo = modelo;
+  if (CAMERAS.includes(raw.camera_ativa)) out.camera_ativa = raw.camera_ativa;
   const cargaCena = parseCargaCena(raw.carga_cena);
   if (cargaCena) out.carga_cena = cargaCena;
   const validacao = parseValidation(raw.validacao);
@@ -306,7 +309,6 @@ module.exports = {
   STATUSES,
   EPI_STATES,
   normalizeEpiType,
-  isKnownEpiType,
   parseId,
   parseConfidence,
   parseTimestamp,
